@@ -38,8 +38,8 @@ class SN_model:
         self.production = np.mean(self.demand, axis=1)
         if p_shuffle:
             np.random.shuffle(self.production)
-        self.inventories = np.zeros(N)
-        self.inventories_hist = {"{:0{w}}".format(i, w=self.__nd): {} for i in range(N)}
+        self.inventory = np.zeros(N)
+        self.inventory_hist = {"{:0{w}}".format(i, w=self.__nd): {} for i in range(N)}
         self.deliveries = {"{:0{w}}<{:0{w}}".format(i, j, w=self.__nd): {} for i in range(N) for j in range(N) if i != j}
         self.deliveries['total'] = {}
         self.tot_prod = 0.0
@@ -47,34 +47,41 @@ class SN_model:
 
         print("Demand:\n{}".format(self.demand))
         print("\nProduction:\n{}".format(self.production))
-        print("\nInventories:\n{}".format(self.inventories))
+        print("\ninventory:\n{}".format(self.inventory))
         print("\nDeliveries:\n{}".format(self.deliveries))
 
 
     def simulate_distribution(self, rd_mode, T):
         """
         rd_mode - redistribution mode
-            ["zero", "average"]
+            ["zero_prop", "zero_pair", "mean"]
         """
         self.rd_mode = rd_mode
-        # self.T = T
+        self.t = 0
 
-        for t in range(1, T):
+        np.random.seed(5)
+
+        # for t in range(1, T):
+        while self.t < T:
             kx = np.random.randint(0, self.K)
 
             self.tot_prod += sum(self.production)
             self.tot_cons += sum(self.demand[:,kx])
-            self.inventories += self.production - self.demand[:,kx]
-            self.__redistribute(t)
+            self.inventory += self.production - self.demand[:,kx]
 
-            print("{:4},   <{}>\n{}".format(t, kx, self.inventories))
+            print("{:4},   <{}>\n{}".format(self.t, kx, self.inventory))
+            self.__redistribute()
+            print(self.inventory)
+
             for i in range(self.N):
                 __i = "{:0{w}}".format(i, w=self.__nd)
-                self.inventories_hist[__i][t] = self.inventories[i]
+                self.inventory_hist[__i][self.t] = self.inventory[i]
+            self.t += 1
+
 
         print("Difference between total production and consumption after %d iterations:\n absolute = %.2f\n"%(T, self.tot_prod - self.tot_cons), 
             "relative = %.2f%%"%(100 * (self.tot_prod - self.tot_cons)/self.tot_prod))
-        print(" sum(inv) = %.2f"%sum(self.inventories))
+        print(" sum(inv) = %.2f"%sum(self.inventory))
 
 
 
@@ -118,57 +125,85 @@ class SN_model:
 
 
 
-    def __redistribute(self, t):
+    def __redistribute(self):
+        self.deliveries['total'][self.t] = 0.0
+
+        if self.rd_mode == "zero_prop":
+            self.__distribute_zero_proportional()
+
+        elif self.rd_mode == "zero_pair":
+            self.__distribute_zero_pair()
+
+        elif self.rd_mode == "mean":
+            self.__distribute_mean()
+
+
+    def __distribute_zero_proportional(self):
         inv_flow = np.zeros(self.N)
-        self.deliveries['total'][t] = 0.0
 
-        if self.rd_mode == "zero":
-            senders = np.where(self.inventories > 0)[0]
-            receivers = np.where(self.inventories <= 0)[0]
+        senders = np.where(self.inventory > 0)[0]
+        receivers = np.where(self.inventory <= 0)[0]
 
-            stockpile = np.sum(self.inventories[senders])
-            backlog = abs(np.sum(self.inventories[receivers]))
-            redistributed = min(stockpile, backlog)
+        stockpile = np.sum(self.inventory[senders])
+        backlog = abs(np.sum(self.inventory[receivers]))
+        redistributed = min(stockpile, backlog)
 
-            # print(inventories)
-            # print(senders, receivers)
-            for j in senders:
-                redist_share = redistributed * self.inventories[j] / stockpile
-                self.deliveries['total'][t] += redist_share
-                for i in receivers:
-                    reci_share = redist_share * self.inventories[i] / backlog
-                    self.deliveries["{:0{w}}<{:0{w}}".format(i, j, w=self.__nd)][t] = - reci_share
-                    self.deliveries["{:0{w}}<{:0{w}}".format(j, i, w=self.__nd)][t] =   reci_share
-                    inv_flow[i] -= reci_share
-                inv_flow[j] -= redist_share
+        for j in senders:
+            redist_share = redistributed * self.inventory[j] / stockpile
+            self.deliveries['total'][self.t] += redist_share
+            for i in receivers:
+                reci_share = redist_share * self.inventory[i] / backlog
+                self.deliveries["{:0{w}}<{:0{w}}".format(i, j, w=self.__nd)][self.t] = - reci_share
+                self.deliveries["{:0{w}}<{:0{w}}".format(j, i, w=self.__nd)][self.t] =   reci_share
+                inv_flow[i] -= reci_share
+            inv_flow[j] -= redist_share
+        self.inventory += inv_flow
 
-        elif self.rd_mode == "average":
-            m = np.mean(self.inventories)
-            # print("mean = %.2f"%m)
-            senders = np.where(self.inventories > m)[0]
-            receivers = np.where(self.inventories < m)[0]
 
-            # print(inventories)
-            # print(senders, receivers)
-            backlog = abs(np.sum(self.inventories[receivers]))
+    def __distribute_zero_pair(self):
+        surplus = sum(self.inventory[np.where(self.inventory > 0)[0]])
+        backlog = sum(self.inventory[np.where(self.inventory < 0)[0]])
 
-            disbalance = self.inventories - m
-            backlog = sum(disbalance[disbalance < 0])
+        while surplus > 0.001 and backlog < -0.001:
+            isort = np.argsort(self.inventory)
+            a, b = isort[0], isort[-1]
+            v = min(abs(self.inventory[a]), self.inventory[b])
+            # print('Exchanging between {:.2f} and {:.2f}; volume = {:.2f}'.format(self.inventory[a], self.inventory[b], v))
 
-            # print()
-            for j in senders:
-                redist_share = (self.inventories[j] - m)
-                self.deliveries['total'][t] += redist_share
-                # print(" %d, sending %.2f"%(j, redist_share))
-                for i in receivers:
-                    reci_share = redist_share * disbalance[i] / backlog
-                    # print("  %d receives %.2f"%(i, reci_share))
-                    self.deliveries["{:0{w}}<{:0{w}}".format(i, j, w=self.__nd)][t] = - reci_share
-                    self.deliveries["{:0{w}}<{:0{w}}".format(j, i, w=self.__nd)][t] =   reci_share
-                    inv_flow[i] += reci_share
-                inv_flow[j] -= redist_share
+            self.deliveries["{:0{w}}<{:0{w}}".format(a, b, w=self.__nd)][self.t] = v
+            self.deliveries["{:0{w}}<{:0{w}}".format(b, a, w=self.__nd)][self.t] = -v
+            self.deliveries['total'][self.t] += v
 
-        self.inventories += inv_flow
+            self.inventory[a] += v
+            self.inventory[b] -= v
+            surplus -= v
+            backlog += v
+
+
+    def __distribute_mean(self):
+        inv_flow = np.zeros(self.N)
+
+        m = np.mean(self.inventory)
+        senders = np.where(self.inventory > m)[0]
+        receivers = np.where(self.inventory < m)[0]
+
+        backlog = abs(np.sum(self.inventory[receivers]))
+
+        disbalance = self.inventory - m
+        backlog = sum(disbalance[disbalance < 0])
+
+        for j in senders:
+            redist_share = (self.inventory[j] - m)
+            self.deliveries['total'][self.t] += redist_share
+            # print(" %d, sending %.2f"%(j, redist_share))
+            for i in receivers:
+                reci_share = redist_share * disbalance[i] / backlog
+                # print("  %d receives %.2f"%(i, reci_share))
+                self.deliveries["{:0{w}}<{:0{w}}".format(i, j, w=self.__nd)][self.t] = - reci_share
+                self.deliveries["{:0{w}}<{:0{w}}".format(j, i, w=self.__nd)][self.t] =   reci_share
+                inv_flow[i] += reci_share
+            inv_flow[j] -= redist_share
+        self.inventory += inv_flow
 
 
 
@@ -184,12 +219,12 @@ class SN_model:
         df_deliver.fillna(0.0, inplace=True)
         df_deliver.sort_index(inplace=True)
 
-        df_inv = pd.DataFrame(data=self.inventories_hist, columns=["{:0{w}}".format(i, w=self.__nd) for i in range(self.N)])
+        df_inv = pd.DataFrame(data=self.inventory_hist, columns=["{:0{w}}".format(i, w=self.__nd) for i in range(self.N)])
         # df_deliver.to_csv(path + "deliveries.csv")
-        # df_inv.to_csv(path + "inventories.csv")
+        # df_inv.to_csv(path + "inventory.csv")
 
         with pd.ExcelWriter(path + 'history.xlsx') as writer:
-            df_inv.to_excel(writer, sheet_name='Inventories')
+            df_inv.to_excel(writer, sheet_name='inventory')
             df_deliver.to_excel(writer, sheet_name='Deliveries')
 
 
@@ -212,7 +247,7 @@ class SN_model:
         """
         Saves figures with supply network image.
         ekey - edge labels key
-            ['mean_std', 'corr']
+            ['mean_std', 'corr', 'usage']
         """
         path = "res-N={}-K={}-rd={}/".format(self.N, self.K, self.rd_mode)
         if not os.path.exists(path):
@@ -231,37 +266,46 @@ class SN_model:
         edges = {}
         title = 'edges: {}'.format(ekey)
         fname = path + 'network-{}.png'.format(ekey)
-        for key in self.deliveries:
-            if key == 'total':
-                continue
-            i, j = tuple(map(int, key.split("<")))
-            # nums = df_deliver[key]
-            nums = list(self.deliveries[key].values())
-            m = abs(np.mean(nums))
-            s = np.std(nums)
-            if ekey == "corr":
+
+        if ekey == "corr":
+            for i, j, key in self.__edges():
                 corr, _ = pearsonr(self.demand[i], self.demand[j])
                 edges[(i, j)] = "%.2f"%(corr)
-            elif ekey == "mean_std":
+
+        elif ekey == 'mean_std':
+            for i, j, key in self.__edges():
+                if not self.deliveries[key]:
+                    continue
+                nums = list(self.deliveries[key].values())
+                m = abs(np.mean(nums))
+                s = np.std(nums)
                 edges[(i, j)] = "%.2f\n%.2f"%(m, s)
 
-
+        elif ekey == 'usage':
+            for i, j, key in self.__edges():
+                if not self.deliveries[key]:
+                    continue
+                
+                nums = np.fromiter(self.deliveries[key].values(), dtype=float)
+                a = 100 * np.where(nums < 0)[0].size / self.t
+                b = 100 * np.where(nums > 0)[0].size / self.t
+                edges[(i, j)] = '{:.0f}\n{:.0f}/{:.0f}'.format(a+b, a, b)
 
 
         G.add_edges_from(edges)
 
-        sizes = self.production * 25
-        pos = nx.spring_layout(G, seed=0)
+        sizes = self.production * 30
+        # pos = nx.spring_layout(G, seed=0)
+        pos = nx.circular_layout(G)
 
-        # fig, ax = plt.subplots(figsize=(8, 6))
-        plt.Figure(figsize=(8, 6))
+        fig, ax = plt.subplots(figsize=(8, 6))
         plt.title(title)
 
         nx.draw_networkx_nodes(G, pos, node_size = sizes, node_color = 'C1', edgecolors = '#5c5c5c', linewidths = 0.5)
         nx.draw_networkx_labels(G, pos, labels=nodes)
 
         nx.draw_networkx_edges(G, pos, node_size = sizes, style='solid', width=3.0, edge_color = "#ff7f0e", alpha=0.4)
-        nx.draw_networkx_edge_labels(G, pos, node_size = sizes, edge_labels=edges)
+        nx.draw_networkx_edge_labels(G, pos, node_size = sizes, edge_labels=edges) # , bbox=dict(alpha=0.5)
         
         # plt.xlim((-2.5, 10.6))
         # plt.ylim((-2.5, 9.8))
@@ -273,19 +317,25 @@ class SN_model:
         plt.close()
 
 
+    def __edges(self):
+        for i in range(self.N):
+            for j in range(i+1, self.N):
+                yield (i, j, "{:0{w}}<{:0{w}}".format(i, j, w=self.__nd))
+
 
 
 
 N = 5
-K = 3
+K = 5
 SN1 = SN_model(N, K)
 
-T = 20
-rd_mode = ["zero", "average"][0]
+T = 1000
+rd_mode = ["zero_prop", 'zero_pair', "mean"][1]
 SN1.simulate_distribution(rd_mode, T)
 
-ekey = ['mean_std', 'corr'][0]
-SN1.save_network(ekey)
+ekeys = ['mean_std', 'corr', 'usage']
+for ekey in ekeys:
+    SN1.save_network(ekey)
 SN1.save_results()
 
 
