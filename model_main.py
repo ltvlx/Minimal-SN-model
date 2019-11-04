@@ -61,7 +61,6 @@ class SN_model:
 
         np.random.seed(5)
 
-        # for t in range(1, T):
         while self.t < T:
             kx = np.random.randint(0, self.K)
 
@@ -142,7 +141,7 @@ class SN_model:
         inv_flow = np.zeros(self.N)
 
         senders = np.where(self.inventory > 0)[0]
-        receivers = np.where(self.inventory <= 0)[0]
+        receivers = np.where(self.inventory < 0)[0]
 
         stockpile = np.sum(self.inventory[senders])
         backlog = abs(np.sum(self.inventory[receivers]))
@@ -228,7 +227,7 @@ class SN_model:
             df_deliver.to_excel(writer, sheet_name='Deliveries')
 
 
-        plt.figure(figsize=(6,6))
+        plt.figure(figsize=(4,4))
 
         for i in range(self.N):
             plt.plot(self.demand[i], label=str(i))
@@ -289,7 +288,7 @@ class SN_model:
                 nums = np.fromiter(self.deliveries[key].values(), dtype=float)
                 a = 100 * np.where(nums < 0)[0].size / self.t
                 b = 100 * np.where(nums > 0)[0].size / self.t
-                edges[(i, j)] = '{:.0f}\n{:.0f}/{:.0f}'.format(a+b, a, b)
+                edges[(i, j)] = '{:.0f}%\n{:.0f}/{:.0f}'.format(a+b, a, b)
 
 
         G.add_edges_from(edges)
@@ -298,7 +297,7 @@ class SN_model:
         # pos = nx.spring_layout(G, seed=0)
         pos = nx.circular_layout(G)
 
-        fig, ax = plt.subplots(figsize=(8, 6))
+        fig, ax = plt.subplots(figsize=(6, 6))
         plt.title(title)
 
         nx.draw_networkx_nodes(G, pos, node_size = sizes, node_color = 'C1', edgecolors = '#5c5c5c', linewidths = 0.5)
@@ -326,11 +325,11 @@ class SN_model:
 
 
 N = 5
-K = 5
+K = 3
 SN1 = SN_model(N, K)
 
 T = 1000
-rd_mode = ["zero_prop", 'zero_pair', "mean"][1]
+rd_mode = ["zero_prop", 'zero_pair', "mean"][2]
 SN1.simulate_distribution(rd_mode, T)
 
 ekeys = ['mean_std', 'corr', 'usage']
