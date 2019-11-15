@@ -58,7 +58,7 @@ class TranspNetwork:
     def mutate(self, D):
         # np.random.seed(0)
         non_zero_rows = []
-        for i in range(N):
+        for i in range(self.N):
             idx = np.where(self.A[i] > 0)[0]
             if len(idx) > 1:
                 non_zero_rows.append(i)
@@ -70,13 +70,13 @@ class TranspNetwork:
         while mut_type == 'make_0' and non_zero_rows == []:
             mut_type = np.random.choice(mut_keys, p=mut_probs)
 
-        i = np.random.randint(0, N)
+        i = np.random.randint(0, self.N)
         if mut_type == 'make_0':
             i = np.random.choice(non_zero_rows)
 
         # print('Making a mutation "{}" with row i={}'.format(mut_type, i))
         if mut_type == 'rand_row':
-            row = np.random.randint(0, 100, size=N)
+            row = np.random.randint(0, 100, size=self.N)
             row[i] = 0
             row = row / sum(row)
             # print(row)
@@ -85,7 +85,7 @@ class TranspNetwork:
         elif mut_type == 'exch_val':
             idx = np.where(self.A[i] > 0)[0]
             j_gives = np.random.choice(idx)
-            j_gets = np.random.choice([x for x in range(N) if not x in [j_gives, i]])
+            j_gets = np.random.choice([x for x in range(self.N) if not x in [j_gives, i]])
             
             # 1-99% of the (self.A[i, j_gives])
             h = 0.01 * np.random.randint(1, 100) * self.A[i, j_gives]
@@ -95,7 +95,7 @@ class TranspNetwork:
             self.A[i, j_gets]  += h
 
         elif mut_type == 'swap_val':
-            j1, j2 = np.random.choice([x for x in range(N) if x != i], size=2, replace=False)
+            j1, j2 = np.random.choice([x for x in range(self.N) if x != i], size=2, replace=False)
             # print(j1, j2)
             self.A[i, j1], self.A[i, j2] = self.A[i, j2], self.A[i, j1]
 
@@ -119,8 +119,8 @@ class TranspNetwork:
 
         # number of rows in the res that will be taken from [other.A]
         # 1, ..., N/2
-        n_replace = np.random.randint(1, N // 2 + 1)
-        row_id = np.random.choice([j for j in range(N)], n_replace, replace=False)
+        n_replace = np.random.randint(1, self.N // 2 + 1)
+        row_id = np.random.choice([j for j in range(self.N)], n_replace, replace=False)
         # print(n_replace, row_id)
 
         for i in row_id:
@@ -131,7 +131,7 @@ class TranspNetwork:
 
 
     def copy(self, D):
-        nw_out = TranspNetwork(N, D)
+        nw_out = TranspNetwork(self.N, D)
         nw_out.A = np.array(self.A)
         nw_out.evaluate_network(D)
         return nw_out
@@ -194,10 +194,10 @@ class Optimization_Problem_Wrapper:
         self.m['Mutated'] += P - sum(self.m.values()) # To make generation size == P
 
 
-        print("Creating 0 generation as random networks.")
+        # print("Creating 0 generation as random networks.")
         self.population = [TranspNetwork(N,D) for _ in range(P)]
         self.population.sort(key = lambda x: x.s, reverse=False)
-        print(self.population)
+        # print(self.population)
 
 
     
@@ -211,15 +211,15 @@ class Optimization_Problem_Wrapper:
             next_gen = []
             for i in range(self.m['Recombined']):
                 x = np.random.choice(mating_pool)
-                next_gen.append(x.recombine(TranspNetwork(N, D), D))
+                next_gen.append(x.recombine(TranspNetwork(self.N, self.D), self.D))
 
             for i in range(self.m['Mutated']):
-                x = np.random.choice(mating_pool).copy(D)
-                x.mutate(D)
+                x = np.random.choice(mating_pool).copy(self.D)
+                x.mutate(self.D)
                 next_gen.append(x)
 
             for i in range(self.m['Random']):
-                x = TranspNetwork(N, D)
+                x = TranspNetwork(self.N, self.D)
                 next_gen.append(x)
 
             next_gen += mating_pool
@@ -233,21 +233,22 @@ class Optimization_Problem_Wrapper:
                 else:
                     self.population.append(x)
 
+            # Adding random solutions to fill the population
             if len(self.population) < self.P:
-                # print(len(self.population))
-                for i in range(P - len(self.population)):
-                    x = TranspNetwork(N, D)
+                for i in range(self.P - len(self.population)):
+                    x = TranspNetwork(self.N, self.D)
                     self.population.append(x)
             self.population.sort(key = lambda x: x.s, reverse=False)
 
-            # self.population = mating_pool + next_gen
-            # self.population.sort(key = lambda x: x.s, reverse=False)
-
-            if _g % 100 == 0:
-                print(_g, self.population)
-
             self.scores_history[_g] = [nw.s for nw in self.population]
             self.G = _g
+
+            if _g % 100 == 0:
+                print('{:.3f}'.format(self.population[0].s), end='; ')
+
+                if _g > 200 and (self.scores_history[_g - 200][0] - self.scores_history[_g][0] < 0.01):
+                    print("\tconverged at G={}.".format(_g))
+                    return
 
 
     def plot_convergence(self):
@@ -290,7 +291,6 @@ class Optimization_Problem_Wrapper:
         plt.close()
 
 
-
     def plot_score_histogram(self):
         path = 'res-opt/N={}-K={}/'.format(self.N, self.K)
 
@@ -316,17 +316,17 @@ class Optimization_Problem_Wrapper:
         path = 'res-opt/N={}-K={}/'.format(self.N, self.K)
         if not os.path.exists(path):
             os.makedirs(path)
+        A = self.population[0].A
 
-        fname = 'general'
+        fname = 'nw_general'
         with codecs.open(path + fname + '.dot', "w") as fout:
             fout.write('strict digraph {\n')
             fout.write('\tgraph [splines="spline"];\n')
             fout.write('\tnode [fixedsize=true, fontname=helvetica, fontsize=10, label="\\N", shape=circle, style=solid];\n')
-            for i in range(N):
+            for i in range(self.N):
                 fout.write('\t{0}\t\t[label="{0}"; width=1.0]\n'.format(i))
-            A = self.population[0].A
-            for i in range(N):
-                for j in range(N):
+            for i in range(self.N):
+                for j in range(self.N):
                     if A[i,j] > 0.01:
                         # min + delta * v
                         w = 0.4 + 2.0 * A[i,j]
@@ -334,25 +334,24 @@ class Optimization_Problem_Wrapper:
             fout.write('}')
         call('"C:/Program Files (x86)/Graphviz/bin/dot" -Tpng {0}.dot -o {0}.png'.format(path + fname))
 
+
         for k in range(self.K):
-            fname = 'd={}'.format(k)
+            fname = 'nw-{}'.format(k)
             with codecs.open(path + fname + '.dot', "w") as fout:
                 fout.write('strict digraph {\n')
                 fout.write('\tgraph [splines="spline"];\n')
                 fout.write('\tnode [fixedsize=true, fontname=helvetica, fontsize=10, label="\\N", shape=circle, style=solid];\n')
                 active = []
-                for i in range(N):
+                for i in range(self.N):
                     color = '#df8a8a'
                     if self.D[k, i] >= 0:
                         active.append(i)
                         color = '#b2df8a'
                     fout.write('\t{0}\t\t[label="{0}"; width=1.0; "style"= "filled"; "fillcolor"="{1}"]\n'.format(i, color))
-
-                A = self.population[0].A
-                for i in range(N):
+                for i in range(self.N):
                     if i in active:
-                        for j in range(N):
-                            if A[i,j] > 0.01:
+                        for j in range(self.N):
+                            if  np.sign(self.D[k, i]) != np.sign(self.D[k, j]) and A[i,j] > 0.01:
                                 # min + delta * v
                                 w = 0.4 + 2.0 * A[i,j]
                                 fout.write('\t{} -> {}\t\t[penwidth={:.3f}]\n'.format(i, j, w))
@@ -361,28 +360,72 @@ class Optimization_Problem_Wrapper:
             call('"C:/Program Files (x86)/Graphviz/bin/dot" -Tpng {0}.dot -o {0}.png'.format(path + fname))
 
 
+    def draw_inventories(self):
+        path = 'res-opt/N={}-K={}/'.format(self.N, self.K)
+        A = self.population[0].A
 
-N = 10
-K = 10
+        # k = 0
+        for k in range(self.K):
+            Dk = self.D[k]
+            Rk = np.array(self.D[k], dtype=float)
 
-# N = 15
-# K = 20
-D = np.random.randint(-50, 50, size=(K, N))
+            senders = np.where(Dk > 0)[0]
+            receivers = np.where(Dk < 0)[0]
+            for i in senders:
+                for j in receivers:
+                    if A[i, j] > 0.01:
+                        v = A[i, j] * Dk[i]
+                        Rk[i] -= v
+                        Rk[j] += v
+                        # print('{:2d}-->{:2d}  {:.2f}'.format(i, j, v))
+            print(k, Dk, Rk, np.abs(np.mean(Dk) - np.mean(Rk)) < 0.001)
 
-# number of individuals in a population
-P = 70
-G_max = 1501
+            fig, ax = plt.subplots(figsize=(8, 6))
 
-xxx = Optimization_Problem_Wrapper(N, K, D, P)
+            plt.bar([i for i in range(self.N)], Dk, color='#fff2c9', lw=1.0, ec='#e89c0e', hatch="...", zorder=0)
+            plt.bar([i for i in range(self.N)], Rk, color='#c9dbff', lw=1.0, ec='#4b61a6', hatch="//", zorder=1)
 
-xxx.optimize(G_max)
+            plt.xlabel('node id')
+            plt.ylabel('demand level')
+            plt.grid(alpha = 0.4, linestyle = '--', linewidth = 0.2, color = 'black', zorder=0)
 
-xxx.plot_demand()
-xxx.plot_convergence()
-xxx.plot_score_histogram()
-xxx.draw_network_graphviz()
+            # plt.show()
+            plt.savefig(path + "d={}.png".format(k), dpi=400, bbox_inches = 'tight')
+            plt.close()
 
-print(xxx.population[0])
+
+if __name__ == "__main__":
+    pass
+    # N = 5
+    # K = 5
+    # P = 50
+    # G_max = 1501
+
+
+
+    # N = 10
+    # K = 10
+    # P = 70
+    # G_max = 1501
+
+
+    # xxx = Optimization_Problem_Wrapper(N, K, D, P)
+    # xxx.optimize(G_max)
+
+    # xxx.plot_demand()
+    # xxx.plot_convergence()
+    # # xxx.plot_score_histogram()
+    # xxx.draw_network_graphviz()
+    # xxx.draw_inventories()
+
+
+
+
+
+
+
+
+
 
 
 
