@@ -22,6 +22,7 @@ class TranspNetwork:
     N = 0
     s = None
     A = None
+    D = None
 
     def __init__(self, N, D):
         """
@@ -29,6 +30,7 @@ class TranspNetwork:
         D - demand patterns, matrix sized (N, K)
         """
         self.N = N
+        self.D = D
 
         A = np.random.randint(0, 100, size=(N, N))
         np.fill_diagonal(A, 0)
@@ -42,28 +44,22 @@ class TranspNetwork:
         A = A / A.sum(axis=1, keepdims=True)
         self.A = A
 
-        self.evaluate_network(D)
+        self.evaluate()
 
 
-    def evaluate_network(self, D):
-        R = np.array(D)
+    def evaluate(self):
         self.s = 0.0
-        for k in range(D.shape[0]):
-            Rk, x = self.__get_score(D[k])
-            R[k] = Rk
+        for k in range(self.D.shape[0]):
+            Rk, x = self.__get_score(self.D[k])
             self.s += x
-        # print(R)
 
 
-    def mutate(self, D):
-        # np.random.seed(0)
+    def mutate(self):
         non_zero_rows = []
         for i in range(self.N):
             idx = np.where(self.A[i] > 0)[0]
             if len(idx) > 1:
                 non_zero_rows.append(i)
-        # print(non_zero_rows)
-
 
         mut_type = np.random.choice(mut_keys, p=mut_probs)
         # Yes, I know this is dumb
@@ -99,7 +95,6 @@ class TranspNetwork:
             # print(j1, j2)
             self.A[i, j1], self.A[i, j2] = self.A[i, j2], self.A[i, j1]
 
-
         elif mut_type == 'make_0':
             idx = np.where(self.A[i] > 0)[0]
             if len(idx) <= 1:
@@ -110,30 +105,27 @@ class TranspNetwork:
                 self.A[i,j] = 0
                 self.A[i] = self.A[i] / sum(self.A[i])
 
-        self.evaluate_network(D)
+        self.evaluate()
 
 
+    def recombine(self, other):
+        res = self.copy()
 
-    def recombine(self, other, D):
-        res = self.copy(D)
-
-        # number of rows in the res that will be taken from [other.A]
-        # 1, ..., N/2
+        # number of rows in the res that will be taken from [other.A] 1, ..., N/2
         n_replace = np.random.randint(1, self.N // 2 + 1)
         row_id = np.random.choice([j for j in range(self.N)], n_replace, replace=False)
-        # print(n_replace, row_id)
 
         for i in row_id:
             res.A[i] = other.A[i]
-        res.evaluate_network(D)
+        res.evaluate()
 
         return res
 
 
-    def copy(self, D):
-        nw_out = TranspNetwork(self.N, D)
+    def copy(self):
+        nw_out = TranspNetwork(self.N, self.D)
         nw_out.A = np.array(self.A)
-        nw_out.evaluate_network(D)
+        nw_out.evaluate()
         return nw_out
 
 
@@ -142,12 +134,21 @@ class TranspNetwork:
         return np.max(np.abs(self.A - other.A))
 
 
+    def evaluate_D(self, D):
+        R = np.array(D)
+        self.s = 0.0
+        for k in range(D.shape[0]):
+            Rk, x = self.__get_score(D[k])
+            R[k] = Rk
+            self.s += x
+
+
     def __eq__(self, other):
         return self.compare_networks(other) < 0.02
 
+
     def __ne__(self, other):
         return self.compare_networks(other) >= 0.02
-
 
 
     def __get_score(self, Dk):
@@ -199,7 +200,6 @@ class Optimization_Problem_Wrapper:
         self.population.sort(key = lambda x: x.s, reverse=False)
         # print(self.population)
 
-
     
     def optimize(self, G_max):
         self.scores_history = {0: [nw.s for nw in self.population]}
@@ -211,11 +211,11 @@ class Optimization_Problem_Wrapper:
             next_gen = []
             for i in range(self.m['Recombined']):
                 x = np.random.choice(mating_pool)
-                next_gen.append(x.recombine(TranspNetwork(self.N, self.D), self.D))
+                next_gen.append(x.recombine(TranspNetwork(self.N, self.D)))
 
             for i in range(self.m['Mutated']):
-                x = np.random.choice(mating_pool).copy(self.D)
-                x.mutate(self.D)
+                x = np.random.choice(mating_pool).copy()
+                x.mutate()
                 next_gen.append(x)
 
             for i in range(self.m['Random']):
@@ -392,6 +392,7 @@ class Optimization_Problem_Wrapper:
             # plt.show()
             plt.savefig(path + "d={}.png".format(k), dpi=400, bbox_inches = 'tight')
             plt.close()
+
 
 
 if __name__ == "__main__":
