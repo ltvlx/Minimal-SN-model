@@ -25,16 +25,16 @@ def check_solution_convergence(N, K, D, P, G_max, n_seeds):
 
 
 
-N = 10
+N = 6
 P = 50
-G_max = 3001
+G_max = 501
 N_tests = 5
 
 x = []
 y = []
 # for K in [1, 2, 3, 4, 5, 7, 10, 15, 20, 25, 35, 50, 70, 100]:
-# for K in [2, 10, 50]:
-for K in [100]:
+for K in [2, 10, 50]:
+# for K in [100]:
     print(K)
     D = np.random.randint(-50, 50, size=(K, N))
     sol_var = check_solution_convergence(N, K, D, P, G_max, N_tests)
