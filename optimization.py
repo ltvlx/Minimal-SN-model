@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import networkx as nx
 import os
 import codecs
-from subprocess import call
+from subprocess import run
 
 
 
@@ -17,7 +17,7 @@ mut_probs /= sum(mut_probs)
 # key for the function that calculates the score of a network.
 # z/m -- distance to zero/mean; n/a -- distribution from positive to negative/all demand
 # z_n -- default function
-key_score=['z_n', 'z_a', 'm_n', 'm_a'][0]
+key_score=['z_n', 'z_a', 'm_n', 'm_a'][3]
 
 
 class TranspNetwork:
@@ -386,8 +386,9 @@ class Optimization_Problem_Wrapper:
                         w = 0.4 + 2.0 * A[i,j]
                         fout.write('\t{} -> {}\t\t[penwidth={:.3f}]\n'.format(i, j, w))
             fout.write('}')
-        call('{0} -Tpng {1}.dot -o {1}.png'.format(graphviz_path, self.path + fname))
-
+        # call('{0} -Tpng {1}.dot -o {1}.png'.format(graphviz_path, self.path + fname))
+        arguments = [graphviz_path, '-Tpng', '%s.dot'%(self.path + fname), '-o', '%s.png'%(self.path + fname)]
+        run(args=arguments)
 
         for k in range(self.K):
             fname = 'nw-{}'.format(k)
@@ -417,7 +418,9 @@ class Optimization_Problem_Wrapper:
 
                 fout.write('}')
             # call('"C:/Program Files (x86)/Graphviz/bin/dot" -Tpdf {0}.dot -o {0}.pdf'.format(path + fname))
-            call('{0} -Tpng {1}.dot -o {1}.png'.format(graphviz_path, self.path + fname))
+            # call('{0} -Tpng {1}.dot -o {1}.png'.format(graphviz_path, self.path + fname))
+            arguments = [graphviz_path, '-Tpng', '%s.dot'%(self.path + fname), '-o', '%s.png'%(self.path + fname)]
+            run(args=arguments)
 
 
     def draw_inventories(self):
@@ -467,7 +470,7 @@ if __name__ == "__main__":
     N = 5
     K = 6
     P = 100
-    G_max = 101
+    G_max = 1501
 
     # N = 10
     # K = 10
