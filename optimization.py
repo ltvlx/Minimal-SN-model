@@ -10,15 +10,13 @@ from subprocess import run
 np.set_printoptions(precision=4, suppress=True)
 np.random.seed(0)
 
-mut_keys = np.array(['rand_row', 'exch_val', 'make_0', 'swap_val'])
-mut_probs = np.array([0.30, 0.30, 0.10, 0.30])
-mut_probs /= sum(mut_probs)
 
 # key for the function that calculates the score of a network.
 # z/m -- distance to zero/mean; n/a -- distribution from positive to negative/all demand
 # z_n -- default function
-key_score=['z_n', 'z_a', 'm_n', 'm_a'][3]
-
+key_score=['z_n', 'z_a', 'm_n', 'm_a'][2]
+key_flex = False
+min_w = 0.01
 
 class TranspNetwork:
     N = 0
@@ -49,18 +47,30 @@ class TranspNetwork:
         self.evaluate()
 
 
-    def evaluate(self):
+    def evaluate(self, D=None):
+        # print(np.sum(self.A, axis=1))
+        assert(np.all(np.sum(self.A, axis=1) < 1.01))
+
+        if D == None:
+            D = self.D
+
+        for i in range(self.N):
+            for j in range(self.N):
+                if self.A[i, j] < min_w:
+                    self.A[i, j] = 0
+
+
         self.s = 0.0
-        for k in range(self.D.shape[0]):
+        for k in range(D.shape[0]):
             # # Temporary modification
             if key_score == 'm_n':
-                Rk, x = self.__get_score_mean(self.D[k])
+                Rk, x = self.__get_score_mean(D[k])
             elif key_score == 'm_a':
-                Rk, x = self.__get_score_pos2all_mean(self.D[k])
+                Rk, x = self.__get_score_pos2all_mean(D[k])
             elif key_score == 'z_a':
-                Rk, x = self.__get_score_pos2all(self.D[k])
+                Rk, x = self.__get_score_pos2all(D[k])
             else:
-                Rk, x = self.__get_score(self.D[k])
+                Rk, x = self.__get_score(D[k])
             self.s += x
 
 
@@ -71,10 +81,10 @@ class TranspNetwork:
             if len(idx) > 1:
                 non_zero_rows.append(i)
 
-        mut_type = np.random.choice(mut_keys, p=mut_probs)
-        # Yes, I know this is dumb
-        while mut_type == 'make_0' and non_zero_rows == []:
-            mut_type = np.random.choice(mut_keys, p=mut_probs)
+        if non_zero_rows == []:
+            mut_type = np.random.choice(['rand_row', 'exch_val', 'swap_val'], p=[0.34, 0.33, 0.33])
+        else:
+            mut_type = np.random.choice(['rand_row', 'exch_val', 'make_0', 'swap_val'], p=[0.25, 0.25, 0.25, 0.25])
 
         i = np.random.randint(0, self.N)
         if mut_type == 'make_0':
@@ -89,20 +99,21 @@ class TranspNetwork:
             self.A[i] = row
 
         elif mut_type == 'exch_val':
-            idx = np.where(self.A[i] > 0)[0]
+            idx = np.where(self.A[i] > 0.01)[0]
             j_gives = np.random.choice(idx)
-            j_gets = np.random.choice([x for x in range(self.N) if not x in [j_gives, i]])
-            
-            # 1-99% of the (self.A[i, j_gives])
-            h = 0.01 * np.random.randint(1, 100) * self.A[i, j_gives]
-
-            # print('From {} to {}, the value of {:.2f} (max was {:.2f})'.format(j_gives, j_gets, h, self.A[i, j_gives]))
+            h = (0.01 + 0.99 * np.random.random()) * self.A[i, j_gives]
             self.A[i, j_gives] -= h
-            self.A[i, j_gets]  += h
+
+            # Potentially, an error here. The sum of a row can become zero.
+            dont_send = key_flex and np.random.random() >= 0.7
+
+            if not dont_send:
+                j_gets = np.random.choice([x for x in range(self.N) if not x in [j_gives, i]])
+                # print('From {} to {}, the value of {:.2f} (max was {:.2f})'.format(j_gives, j_gets, h, self.A[i, j_gives]))
+                self.A[i, j_gets]  += h
 
         elif mut_type == 'swap_val':
             j1, j2 = np.random.choice([x for x in range(self.N) if x != i], size=2, replace=False)
-            # print(j1, j2)
             self.A[i, j1], self.A[i, j2] = self.A[i, j2], self.A[i, j1]
 
         elif mut_type == 'make_0':
@@ -111,9 +122,11 @@ class TranspNetwork:
                 print('mutation {} at row {} failed. Not enough non-zero values.'.format(mut_type, i))
             else:
                 j = np.random.choice(idx)
-                # print('\tj=%d'%j)
                 self.A[i,j] = 0
-                self.A[i] = self.A[i] / sum(self.A[i])
+                
+                p_normalize = np.random.random()
+                if not key_flex or (p_normalize < 0.5):
+                    self.A[i] = self.A[i] / sum(self.A[i])
 
         self.evaluate()
 
@@ -144,21 +157,12 @@ class TranspNetwork:
         return np.max(np.abs(self.A - other.A))
 
 
-    def evaluate_D(self, D):
-        R = np.array(D)
-        self.s = 0.0
-        for k in range(D.shape[0]):
-            Rk, x = self.__get_score(D[k])
-            R[k] = Rk
-            self.s += x
-
-
     def __eq__(self, other):
         return self.compare_networks(other) < 0.02
 
 
     def __ne__(self, other):
-        return self.compare_networks(other) >= 0.02
+        return not self.__eq__(other)
 
 
     def __get_score(self, Dk):
@@ -236,8 +240,8 @@ class Optimization_Problem_Wrapper:
     def __init__(self, N, K, D, P):
         gen_prop = {
             'Parents': 0.2,
-            'Recombined': 0.4,
-            'Mutated': 0.3,
+            'Recombined': 0.3,
+            'Mutated': 0.4,
             'Random': 0.1}
         assert(abs(sum(gen_prop.values()) - 1) < 0.001)
 
@@ -255,9 +259,12 @@ class Optimization_Problem_Wrapper:
         self.population.sort(key = lambda x: x.s, reverse=False)
         # print(self.population)
 
-        self.path = 'res-opt/N={}-K={}-{}/'.format(self.N, self.K, key_score)
+        str_flex = '-flex' if key_flex else ''
+        self.path = 'res-opt/filt_N={}-K={}-{}{}/'.format(self.N, self.K, key_score, str_flex)
         if not os.path.exists(self.path):
             os.makedirs(self.path)
+        print(self.path)
+        
 
 
     
@@ -306,9 +313,9 @@ class Optimization_Problem_Wrapper:
             if _g % 100 == 0:
                 print('({}, {:.3f})'.format(_g, self.population[0].s), end=' ', flush=True)
 
-                if _g > 200 and (self.scores_history[_g - 200][0] - self.scores_history[_g][0] < 0.01):
-                    print("\tconverged at G={}.".format(_g))
-                    return
+                # if _g > 200 and (self.scores_history[_g - 200][0] - self.scores_history[_g][0] < 0.01):
+                #     print("\tconverged at G={}.".format(_g))
+                #     return
 
 
     def plot_convergence(self):
@@ -348,31 +355,12 @@ class Optimization_Problem_Wrapper:
         plt.close()
 
 
-    def plot_score_histogram(self):
-        bbins = np.linspace(min(self.scores_history[self.G]), max(self.scores_history[self.G]), 30)
-        fig, ax = plt.subplots(figsize=(6,4))
-        for _g in [1, self.G//2, self.G]:
-            c, b = np.histogram(self.scores_history[_g], bins=bbins)
-            ax.plot(b[1:], c, 'o-', alpha=0.6, label=str(_g))
-            # ax.hist(self.scores_history[_g], bins=bbins, alpha=0.4, label=str(_g))
-
-        ax.set_ylabel('score')
-        ax.set_xlabel('frequency')        
-        ax.legend()
-
-        ax.grid(alpha = 0.4, linestyle = '--', linewidth = 0.2, color = 'black')
-
-
-        plt.savefig(self.path + 'gen_scores-P={}-G={}.png'.format(self.P, self.G), bbox_inches = 'tight', pad_inches=0.1, dpi=400)
-        plt.show()
-
-
-    def draw_network_graphviz(self):
+    def draw_network_graphviz(self, draw_all=True, postfix=''):
         import platform
-        graphviz_path = '"C:/Program Files (x86)/Graphviz/bin/dot"' if platform.system() == 'Windows' else 'dot'
+        graphviz_path = 'C:/Program Files (x86)/Graphviz/bin/dot.exe' if platform.system() == 'Windows' else 'dot'
         A = self.population[0].A
 
-        fname = 'nw_general'
+        fname = 'nw_general' + postfix
         with codecs.open(self.path + fname + '.dot', "w") as fout:
             fout.write('strict digraph {\n')
             fout.write('\tgraph [splines="spline"];\n')
@@ -390,8 +378,11 @@ class Optimization_Problem_Wrapper:
         arguments = [graphviz_path, '-Tpng', '%s.dot'%(self.path + fname), '-o', '%s.png'%(self.path + fname)]
         run(args=arguments)
 
+        if not draw_all:
+            return
+         
         for k in range(self.K):
-            fname = 'nw-{}'.format(k)
+            fname = 'nw-{}'.format(k) + postfix
             with codecs.open(self.path + fname + '.dot', "w") as fout:
                 fout.write('strict digraph {\n')
                 fout.write('\tgraph [splines="spline"];\n')
@@ -465,41 +456,63 @@ class Optimization_Problem_Wrapper:
             plt.close()
 
 
+    def save_optimal_adj(self, idx=0, postfix=''):
+        fname = 'G={:05d}-i={:03d}{}.netw'.format(self.G, idx, postfix)
+        header = '# G={}, i={}, score={:.4f}, mode={}\n'.format(self.G, idx, self.population[idx].s, key_score)
+
+        with codecs.open(self.path + fname, 'w') as fout:
+            fout.write(header)
+            fout.write('# adjacency matrix A, N={}\n'.format(self.N))
+            for row in self.population[idx].A:
+                line = ' '.join(['%8.6f'%x for x in row])
+                fout.write(line + '\n')
+
+            fout.write('# demand pattern D, K={}\n'.format(self.K))
+            for row in self.D:
+                line = ' '.join(['%8.4f'%x for x in row])
+                fout.write(line + '\n')
+
+        # np.savetxt(self.path + fname, self.population[idx].A, '%.4f', header=h)
+
+
+
+
+    def save_optimal_edges(self, idx=0, postfix=''):
+        fname = 'G={:04d}-i={:02d}{}.edges'.format(self.G, idx, postfix)
+        
+        with codecs.open(self.path + fname, 'w') as fout:
+            for i in range(self.N):
+                for j in range(self.N):
+                    if self.population[idx].A[i,j] > 0.01:
+                        fout.write('{}\t{}\t1\n'.format(i+1, j+1))
+
+
+
+
 
 if __name__ == "__main__":
     N = 5
     K = 6
-    P = 100
-    G_max = 1501
+    P = 50
+    G_max = 2001
 
-    # N = 10
-    # K = 10
-    # P = 70
-    # G_max = 1501
+    for rd in range(1):
+        print('New demand;', rd)
+        D = np.random.randint(-50, 50, size=(K, N))
 
-    D = np.random.randint(-50, 50, size=(K, N))
+        xxx = Optimization_Problem_Wrapper(N, K, D, P)
+        xxx.optimize(G_max)
 
-    # print(D)
-    # nw1 = TranspNetwork(N, D)
-    # print(nw1)
-
-
-    xxx = Optimization_Problem_Wrapper(N, K, D, P)
-    xxx.optimize(G_max)
-
-    print(xxx.population[0])
-
-    xxx.plot_demand()
-    xxx.plot_convergence()
-    # # xxx.plot_score_histogram()
-    xxx.draw_network_graphviz()
-    xxx.draw_inventories()
-
-    # pass
+        # print(xxx.population[0])
+        xxx.save_optimal_adj(0, '-rd={:02d}'.format(rd))
+        xxx.save_optimal_edges(0)
+        xxx.draw_network_graphviz(draw_all=False, postfix='-rd={:02d}'.format(rd))
 
 
-
-
+        # xxx.plot_demand()
+        xxx.plot_convergence()
+        # xxx.draw_network_graphviz(draw_all=False)
+        # xxx.draw_inventories()
 
 
 
