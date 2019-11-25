@@ -24,7 +24,7 @@ class TranspNetwork:
     A = None
     D = None
 
-    def __init__(self, N, D):
+    def __init__(self, N, D, A=None):
         """
         N - number of nodes in the network
         D - demand patterns, matrix sized (N, K)
@@ -32,6 +32,7 @@ class TranspNetwork:
         self.N = N
         self.D = D
 
+        if A is None:
         A = np.random.randint(0, 100, size=(N, N))
         np.fill_diagonal(A, 0)
         # Check if some row is only zeros
@@ -43,6 +44,8 @@ class TranspNetwork:
         
         A = A / A.sum(axis=1, keepdims=True)
         self.A = A
+        else:
+            self.A = A
 
         self.evaluate()
 
@@ -51,7 +54,7 @@ class TranspNetwork:
         # print(np.sum(self.A, axis=1))
         assert(np.all(np.sum(self.A, axis=1) < 1.01))
 
-        if D == None:
+        if D is None:
             D = self.D
 
         for i in range(self.N):
@@ -63,14 +66,14 @@ class TranspNetwork:
         self.s = 0.0
         for k in range(D.shape[0]):
             # # Temporary modification
-            if key_score == 'm_n':
-                Rk, x = self.__get_score_mean(D[k])
-            elif key_score == 'm_a':
-                Rk, x = self.__get_score_pos2all_mean(D[k])
+            if key_score == 'z_n':
+                Rk, x = self.__get_score_zero_pos2neg(D[k])
             elif key_score == 'z_a':
-                Rk, x = self.__get_score_pos2all(D[k])
-            else:
-                Rk, x = self.__get_score(D[k])
+                Rk, x = self.__get_score_zero_pos2all(D[k])
+            elif key_score == 'm_n':
+                Rk, x = self.__get_score_mean_pos2neg(D[k])
+            elif key_score == 'm_a':
+                Rk, x = self.__get_score_mean_pos2all(D[k])
             self.s += x
 
 
@@ -165,7 +168,7 @@ class TranspNetwork:
         return not self.__eq__(other)
 
 
-    def __get_score(self, Dk):
+    def __get_score_zero_pos2neg(self, Dk):
         Rk = np.array(Dk, dtype=float)
         senders = np.where(Dk > 0)[0]
         receivers = np.where(Dk < 0)[0]
@@ -174,11 +177,27 @@ class TranspNetwork:
                 v = self.A[i, j] * Dk[i]
                 Rk[i] -= v
                 Rk[j] += v
-        # print(Rk)
         return Rk, sum(np.abs(Rk))
 
 
-    def __get_score_mean(self, Dk):
+    def __get_score_zero_pos2all(self, Dk):
+        """
+        Modification where a node sends product to all connected nodes, including those with positive demand
+        """
+        Rk = np.array(Dk, dtype=float)
+        senders = np.where(Dk > 0)[0]
+        for i in senders:
+            for j in range(self.N):
+                # if j != i and self.A[i, j] > 0:
+                if self.A[i, j] > 0:
+                    v = self.A[i, j] * Dk[i]
+                    # print(i, j, v)
+                    Rk[i] -= v
+                    Rk[j] += v
+        return Rk, sum(np.abs(Rk))
+
+
+    def __get_score_mean_pos2neg(self, Dk):
         """
         Modification where the score is calculated as the absolute difference from the mean demand across all nodes.
         """
@@ -194,22 +213,7 @@ class TranspNetwork:
         return Rk, sum(np.abs(m - Rk))
 
 
-    def __get_score_pos2all(self, Dk):
-        """
-        Modification where a node sends product to all connected nodes, including those with positive demand
-        """
-        Rk = np.array(Dk, dtype=float)
-        senders = np.where(Dk > 0)[0]
-        for i in senders:
-            for j in range(self.N):
-                if j != i and self.A[i, j] > 0:
-                    v = self.A[i, j] * Dk[i]
-                    Rk[i] -= v
-                    Rk[j] += v
-        return Rk, sum(np.abs(Rk))
-
-
-    def __get_score_pos2all_mean(self, Dk):
+    def __get_score_mean_pos2all(self, Dk):
         """
         Modification where a node sends product to all connected nodes, including those with positive demand
         """
@@ -260,7 +264,7 @@ class Optimization_Problem_Wrapper:
         # print(self.population)
 
         str_flex = '-flex' if key_flex else ''
-        self.path = 'res-opt/filt_N={}-K={}-{}{}/'.format(self.N, self.K, key_score, str_flex)
+        self.path = 'res-opt/N={}-K={}-{}{}/'.format(self.N, self.K, key_score, str_flex)
         if not os.path.exists(self.path):
             os.makedirs(self.path)
         print(self.path)
