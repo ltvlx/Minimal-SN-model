@@ -15,7 +15,6 @@ np.random.seed(0)
 # z/m -- distance to zero/mean; n/a -- distribution from positive to negative/all demand
 # z_n -- default function
 key_score=['z_n', 'z_a', 'm_n', 'm_a'][0]
-key_flex = True
 min_w = 0.01
 
 class TranspNetwork:
@@ -111,10 +110,10 @@ class TranspNetwork:
             h = (0.01 + 0.99 * np.random.random()) * self.A[i, j_gives]
             self.A[i, j_gives] -= h
 
+            # Probability to add the substracted value to another element in the row, thus keeping the row sum unchanged.
             # Potentially, an error here. The sum of a row can become zero.
-            dont_send = key_flex and np.random.random() >= 0.7
-
-            if not dont_send:
+            p_send = np.random.random()
+            if p_send < 0.7:
                 j_gets = np.random.choice([x for x in range(self.N) if not x in [j_gives, i]])
                 # print('From {} to {}, the value of {:.2f} (max was {:.2f})'.format(j_gives, j_gets, h, self.A[i, j_gives]))
                 self.A[i, j_gets]  += h
@@ -131,8 +130,9 @@ class TranspNetwork:
                 j = np.random.choice(idx)
                 self.A[i,j] = 0
                 
+                # Probability to normalize the row, thus making its sum == 1
                 p_normalize = np.random.random()
-                if not key_flex or (p_normalize < 0.5):
+                if p_normalize < 0.5:
                     self.A[i] = self.A[i] / sum(self.A[i])
 
         self.evaluate()
@@ -274,8 +274,7 @@ class Optimization_Problem_Wrapper:
         self.population.sort(key = lambda x: x.s, reverse=False)
         # print(self.population)
 
-        str_flex = '-flex' if key_flex else ''
-        self.path = 'res-opt/N={}-K={}-{}{}/'.format(self.N, self.K, key_score, str_flex)
+        self.path = 'res-opt/N={}-K={}-{}/'.format(self.N, self.K, key_score)
         if not os.path.exists(self.path):
             os.makedirs(self.path)
         print(self.path)
