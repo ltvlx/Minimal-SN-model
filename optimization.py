@@ -32,17 +32,16 @@ class TranspNetwork:
         self.D = D
 
         if A is None:
-        A = np.random.randint(0, 100, size=(N, N))
-        np.fill_diagonal(A, 0)
-        # Check if some row is only zeros
-        for i in range(N):
-            while sum(A[i]) < 0.001:
-                row = np.random.randint(0, 100, size=N)
-                row[i] = 0
-                A[i] = row
-        
-        A = A / A.sum(axis=1, keepdims=True)
-        self.A = A
+            A = np.random.randint(0, 100, size=(N, N))
+            np.fill_diagonal(A, 0)
+            # Check if some row is only zeros
+            for i in range(N):
+                while sum(A[i]) < 0.001:
+                    row = np.random.randint(0, 100, size=N)
+                    row[i] = 0
+                    A[i] = row
+            A = A / A.sum(axis=1, keepdims=True)
+            self.A = A
         else:
             self.A = A
 
