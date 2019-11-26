@@ -14,8 +14,8 @@ np.random.seed(0)
 # key for the function that calculates the score of a network.
 # z/m -- distance to zero/mean; n/a -- distribution from positive to negative/all demand
 # z_n -- default function
-key_score=['z_n', 'z_a', 'm_n', 'm_a'][2]
-key_flex = False
+key_score=['z_n', 'z_a', 'm_n', 'm_a'][0]
+key_flex = True
 min_w = 0.01
 
 class TranspNetwork:
@@ -66,15 +66,19 @@ class TranspNetwork:
         self.s = 0.0
         for k in range(D.shape[0]):
             # # Temporary modification
-            if key_score == 'z_n':
-                Rk, x = self.__get_score_zero_pos2neg(D[k])
-            elif key_score == 'z_a':
-                Rk, x = self.__get_score_zero_pos2all(D[k])
-            elif key_score == 'm_n':
-                Rk, x = self.__get_score_mean_pos2neg(D[k])
-            elif key_score == 'm_a':
-                Rk, x = self.__get_score_mean_pos2all(D[k])
+            Rk, x = self.get_score(D[k])
             self.s += x
+
+
+    def get_score(self, Dk):
+        if key_score == 'z_n':
+            return self.__get_score_zero_pos2neg(Dk)
+        elif key_score == 'z_a':
+            return self.__get_score_zero_pos2all(Dk)
+        elif key_score == 'm_n':
+            return self.__get_score_mean_pos2neg(Dk)
+        elif key_score == 'm_a':
+            return self.__get_score_mean_pos2all(Dk)
 
 
     def mutate(self):
@@ -177,7 +181,10 @@ class TranspNetwork:
                 v = self.A[i, j] * Dk[i]
                 Rk[i] -= v
                 Rk[j] += v
-        return Rk, sum(np.abs(Rk))
+        # return Rk, sum(np.abs(Rk))
+        s_min = np.sqrt((np.mean(Dk) ** 2) * self.N)
+        s = np.sqrt(sum(Rk**2))
+        return Rk, s - s_min
 
 
     def __get_score_zero_pos2all(self, Dk):
@@ -194,7 +201,10 @@ class TranspNetwork:
                     # print(i, j, v)
                     Rk[i] -= v
                     Rk[j] += v
-        return Rk, sum(np.abs(Rk))
+        # return Rk, sum(np.abs(Rk))
+        s_min = np.sqrt((np.mean(Dk) ** 2) * self.N)
+        s = np.sqrt(sum(Rk**2))
+        return Rk, s - s_min
 
 
     def __get_score_mean_pos2neg(self, Dk):
@@ -209,8 +219,8 @@ class TranspNetwork:
                 v = self.A[i, j] * Dk[i]
                 Rk[i] -= v
                 Rk[j] += v
-        m = np.mean(Rk)
-        return Rk, sum(np.abs(m - Rk))
+        # return Rk, sum(np.abs(np.mean(Rk) - Rk))
+        return Rk, np.sqrt(sum((np.mean(Rk) - Rk)**2))
 
 
     def __get_score_mean_pos2all(self, Dk):
@@ -225,7 +235,8 @@ class TranspNetwork:
                     v = self.A[i, j] * Dk[i]
                     Rk[i] -= v
                     Rk[j] += v
-        return Rk, sum(np.abs(np.mean(Rk) - Rk))
+        # return Rk, sum(np.abs(np.mean(Rk) - Rk))
+        return Rk, np.sqrt(sum((np.mean(Rk) - Rk)**2))
 
 
     def __str__(self):
@@ -320,6 +331,7 @@ class Optimization_Problem_Wrapper:
                 # if _g > 200 and (self.scores_history[_g - 200][0] - self.scores_history[_g][0] < 0.01):
                 #     print("\tconverged at G={}.".format(_g))
                 #     return
+        print()
 
 
     def plot_convergence(self):
@@ -424,36 +436,16 @@ class Optimization_Problem_Wrapper:
         # k = 0
         for k in range(self.K):
             Dk = self.D[k]
-            Rk = np.array(self.D[k], dtype=float)
-
-            senders = np.where(Dk > 0)[0]
-            receivers = np.where(Dk < 0)[0]
-            for i in senders:
-                # # Temporary modification
-                if key_score in ['z_n', 'm_n']:
-                    for j in receivers:
-                        if A[i, j] > 0.01:
-                            v = A[i, j] * Dk[i]
-                            Rk[i] -= v
-                            Rk[j] += v
-                            # print('{:2d}-->{:2d}  {:.2f}'.format(i, j, v))
-                elif key_score in ['z_a', 'm_a']:
-                    for j in range(self.N):
-                        if j != i and A[i, j] > 0.01:
-                            v = A[i, j] * Dk[i]
-                            Rk[i] -= v
-                            Rk[j] += v
-                            # print('{:2d}-->{:2d}  {:.2f}'.format(i, j, v))
-            print(k, Dk, Rk, np.abs(np.mean(Dk) - np.mean(Rk)) < 0.001)
+            Rk, x = self.population[0].get_score(Dk)
 
             fig, ax = plt.subplots(figsize=(8, 6))
+            ax.set_title('k={}, score={:.2f}, mean={:.2f}'.format(k, x, np.mean(Dk)))
+            ax.bar([i for i in range(self.N)], Dk, color='#fff2c9', lw=1.0, ec='#e89c0e', hatch="...", zorder=0)
+            ax.bar([i for i in range(self.N)], Rk, color='#c9dbff', lw=1.0, ec='#4b61a6', hatch="//", zorder=1)
 
-            plt.bar([i for i in range(self.N)], Dk, color='#fff2c9', lw=1.0, ec='#e89c0e', hatch="...", zorder=0)
-            plt.bar([i for i in range(self.N)], Rk, color='#c9dbff', lw=1.0, ec='#4b61a6', hatch="//", zorder=1)
-
-            plt.xlabel('node id')
-            plt.ylabel('demand level')
-            plt.grid(alpha = 0.4, linestyle = '--', linewidth = 0.2, color = 'black', zorder=0)
+            ax.set_xlabel('node id')
+            ax.set_ylabel('demand level')
+            ax.grid(alpha = 0.4, linestyle = '--', linewidth = 0.2, color = 'black', zorder=0)
 
             # plt.show()
             plt.savefig(self.path + "d={}.png".format(k), dpi=400, bbox_inches = 'tight')
@@ -516,7 +508,7 @@ if __name__ == "__main__":
         # xxx.plot_demand()
         xxx.plot_convergence()
         # xxx.draw_network_graphviz(draw_all=False)
-        # xxx.draw_inventories()
+        xxx.draw_inventories()
 
 
 
