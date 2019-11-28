@@ -4,6 +4,7 @@ import networkx as nx
 import os
 import codecs
 from subprocess import run
+from platform import system
 
 
 
@@ -14,7 +15,7 @@ np.random.seed(0)
 # key for the function that calculates the score of a network.
 # z/m -- distance to zero/mean; n/a -- distribution from positive to negative/all demand
 # z_n -- default function
-key_score=['z_n', 'z_a', 'm_n', 'm_a'][0]
+key_score=['z_n', 'z_a', 'm_n', 'm_a'][1]
 min_w = 0.01
 
 class TranspNetwork:
@@ -55,15 +56,12 @@ class TranspNetwork:
         if D is None:
             D = self.D
 
-        for i in range(self.N):
-            for j in range(self.N):
-                if self.A[i, j] < min_w:
-                    self.A[i, j] = 0
-
+        for i, j in self.__matrix_iterator():
+            if self.A[i, j] < min_w:
+                self.A[i, j] = 0
 
         self.s = 0.0
         for k in range(D.shape[0]):
-            # # Temporary modification
             Rk, x = self.get_score(D[k])
             self.s += x
 
@@ -150,6 +148,35 @@ class TranspNetwork:
 
         return res
 
+
+    def get_robustness(self, mode='make 0', threshold=0.007):
+        assert(mode in ['make 0', 'proportional'])
+        print("Testing robustness. Mode='{}'".format(mode))
+
+        n_lin = 0
+        n_rob = 0
+        for i, j in self.__matrix_iterator():
+            if self.A[i, j] > 0:
+                n_lin += 1
+                row = np.array(self.A[i])
+                self.A[i, j] = 0
+
+                if mode == 'proportional':
+                    self.A[i] = self.A[i] / max(np.sum(self.A[i]), 1.0)
+
+                self.evaluate()
+                s_rob = self.s
+
+                self.A[i] = row
+                self.evaluate()
+                rate = (s_rob - self.s) / self.s
+                
+                if rate <= threshold:
+                    n_rob += 1
+
+                print('{} {} {:6.4f} {:6.2f} {:6.4f} {}'.format(i, j, self.A[i, j], s_rob, rate, rate <= threshold))
+
+        return n_rob / n_lin
 
     def copy(self):
         nw_out = TranspNetwork(self.N, self.D)
@@ -245,7 +272,104 @@ class TranspNetwork:
     def __repr__(self):
         return "{:.1f}".format(self.s)
 
+    
+    def __matrix_iterator(self):
+        for i in range(self.N):
+            for j in range(self.N):
+                yield (i, j)
 
+
+    def save_edges(self, fpath='network.edges'):
+        with codecs.open(fpath, 'w') as fout:
+            for i, j in self.__matrix_iterator():
+                if self.A[i,j] > 0:
+                    fout.write('{}\t{}\t1\n'.format(i+1, j+1))
+
+
+    def save_network(self, fpath='network.adj'):
+        header = '# score={:.4f}, mode={}\n'.format(self.s, key_score)
+
+        with codecs.open(fpath, 'w') as fout:
+            fout.write(header)
+            fout.write('# adjacency matrix A, N={}\n'.format(self.N))
+            for row in self.A:
+                line = ' '.join(['%8.6f'%x for x in row])
+                fout.write(line + '\n')
+
+            fout.write('# demand pattern D, K={}\n'.format(np.shape(self.D)[0]))
+            for row in self.D:
+                line = ' '.join(['%8.4f'%x for x in row])
+                fout.write(line + '\n')
+
+
+    def draw_inventories(self, path='inventories/'):
+        if not os.path.exists(path):
+            os.makedirs(path)
+
+        for k in range(np.shape(self.D)[0]):
+            Dk = self.D[k]
+            Rk, x = self.get_score(Dk)
+
+            fig, ax = plt.subplots(figsize=(8, 6))
+            ax.set_title('k={}, score={:.2f}, mean={:.2f}'.format(k, x, np.mean(Dk)))
+            ax.bar([i for i in range(self.N)], Dk, color='#fff2c9', lw=1.0, ec='#e89c0e', hatch="...", zorder=0)
+            ax.bar([i for i in range(self.N)], Rk, color='#c9dbff', lw=1.0, ec='#4b61a6', hatch="//", zorder=1)
+
+            ax.set_xlabel('node id')
+            ax.set_ylabel('demand level')
+            ax.grid(alpha = 0.4, linestyle = '--', linewidth = 0.2, color = 'black', zorder=0)
+
+            # plt.show()
+            plt.savefig(path + "d={}.png".format(k), dpi=400, bbox_inches = 'tight')
+            plt.close()
+
+
+    def draw_network_graphviz(self, path='networks/', draw_all=False):
+        if not os.path.exists(path):
+            os.makedirs(path)
+
+        graphviz_path = 'C:/Program Files (x86)/Graphviz/bin/dot.exe' if system() == 'Windows' else 'dot'
+
+        fname = 'nw_general'
+        with codecs.open(path + '%s.dot'%fname, "w") as fout:
+            fout.write('strict digraph {\n')
+            fout.write('\tgraph [splines="spline"];\n')
+            fout.write('\tnode [fixedsize=true, fontname=helvetica, fontsize=10, label="\\N", shape=circle, style=solid];\n')
+            for i in range(self.N):
+                fout.write('\t{0}\t\t[label="{0}"; width=1.0]\n'.format(i))
+            for i, j in self.__matrix_iterator():
+                if self.A[i,j] > 0:
+                    w = 0.4 + 2.0 * self.A[i,j]
+                    fout.write('\t{} -> {}\t\t[penwidth={:.3f}]\n'.format(i, j, w))
+            fout.write('}')
+        arguments = [graphviz_path, '-Tpng', '%s.dot'%(path + fname), '-o', '%s.png'%(path + fname)]
+        run(args=arguments)
+
+        if not draw_all:
+            return
+         
+        for k in range(np.shape(self.D)[0]):
+            fname = 'nw-{:02d}'.format(k)
+            with codecs.open(path + '%s.dot'%fname, "w") as fout:
+                fout.write('strict digraph {\n')
+                fout.write('\tgraph [splines="spline"];\n')
+                fout.write('\tnode [fixedsize=true, fontname=helvetica, fontsize=10, label="\\N", shape=circle, style=solid];\n')
+                active = []
+                for i in range(self.N):
+                    color = '#df8a8a'
+                    if self.D[k, i] >= 0:
+                        active.append(i)
+                        color = '#b2df8a'
+                    fout.write('\t{0}\t\t[label="{0}"; width=1.0; "style"= "filled"; "fillcolor"="{1}"]\n'.format(i, color))
+                for i, j in self.__matrix_iterator():
+                    if i in active and self.A[i,j] > 0:
+                        if self.D[k, j] < 0 or key_score in ['z_a', 'm_a']:
+                            w = 0.4 + 2.0 * self.A[i,j]
+                            fout.write('\t{} -> {}\t\t[penwidth={:.3f}]\n'.format(i, j, w))
+
+                fout.write('}')
+            arguments = [graphviz_path, '-Tpng', '%s.dot'%(path + fname), '-o', '%s.png'%(path + fname)]
+            run(args=arguments)
 
 
 
@@ -279,7 +403,6 @@ class Optimization_Problem_Wrapper:
         print(self.path)
         
 
-
     
     def optimize(self, G_max):
         self.scores_history = {0: [nw.s for nw in self.population]}
@@ -289,16 +412,16 @@ class Optimization_Problem_Wrapper:
             mating_pool = self.population[:self.m['Parents']]
 
             next_gen = []
-            for i in range(self.m['Recombined']):
+            for _ in range(self.m['Recombined']):
                 x = np.random.choice(mating_pool)
                 next_gen.append(x.recombine(TranspNetwork(self.N, self.D)))
 
-            for i in range(self.m['Mutated']):
+            for _ in range(self.m['Mutated']):
                 x = np.random.choice(mating_pool).copy()
                 x.mutate()
                 next_gen.append(x)
 
-            for i in range(self.m['Random']):
+            for _ in range(self.m['Random']):
                 x = TranspNetwork(self.N, self.D)
                 next_gen.append(x)
 
@@ -332,7 +455,7 @@ class Optimization_Problem_Wrapper:
         print()
 
 
-    def plot_convergence(self):
+    def plot_convergence(self, postfix=''):
         x = []
         y = []
         for _g, scores in self.scores_history.items():
@@ -349,8 +472,7 @@ class Optimization_Problem_Wrapper:
 
         ax.grid(alpha = 0.4, linestyle = '--', linewidth = 0.2, color = 'black')
 
-
-        plt.savefig(self.path + 'convergence-P={}-G={}.png'.format(self.P, self.G), bbox_inches = 'tight', pad_inches=0.1, dpi=400)
+        plt.savefig(self.path + 'convergence-P={}-G={}{}.png'.format(self.P, self.G, postfix), bbox_inches = 'tight', pad_inches=0.1, dpi=400)
         # plt.show()
         plt.close()
 
@@ -369,126 +491,32 @@ class Optimization_Problem_Wrapper:
         plt.close()
 
 
-    def draw_network_graphviz(self, draw_all=True, postfix=''):
-        import platform
-        graphviz_path = 'C:/Program Files (x86)/Graphviz/bin/dot.exe' if platform.system() == 'Windows' else 'dot'
-        A = self.population[0].A
-
-        fname = 'nw_general' + postfix
-        with codecs.open(self.path + fname + '.dot', "w") as fout:
-            fout.write('strict digraph {\n')
-            fout.write('\tgraph [splines="spline"];\n')
-            fout.write('\tnode [fixedsize=true, fontname=helvetica, fontsize=10, label="\\N", shape=circle, style=solid];\n')
-            for i in range(self.N):
-                fout.write('\t{0}\t\t[label="{0}"; width=1.0]\n'.format(i))
-            for i in range(self.N):
-                for j in range(self.N):
-                    if A[i,j] > 0.01:
-                        # min + delta * v
-                        w = 0.4 + 2.0 * A[i,j]
-                        fout.write('\t{} -> {}\t\t[penwidth={:.3f}]\n'.format(i, j, w))
-            fout.write('}')
-        # call('{0} -Tpng {1}.dot -o {1}.png'.format(graphviz_path, self.path + fname))
-        arguments = [graphviz_path, '-Tpng', '%s.dot'%(self.path + fname), '-o', '%s.png'%(self.path + fname)]
-        run(args=arguments)
-
-        if not draw_all:
-            return
-         
-        for k in range(self.K):
-            fname = 'nw-{}'.format(k) + postfix
-            with codecs.open(self.path + fname + '.dot', "w") as fout:
-                fout.write('strict digraph {\n')
-                fout.write('\tgraph [splines="spline"];\n')
-                fout.write('\tnode [fixedsize=true, fontname=helvetica, fontsize=10, label="\\N", shape=circle, style=solid];\n')
-                active = []
-                for i in range(self.N):
-                    color = '#df8a8a'
-                    if self.D[k, i] >= 0:
-                        active.append(i)
-                        color = '#b2df8a'
-                    fout.write('\t{0}\t\t[label="{0}"; width=1.0; "style"= "filled"; "fillcolor"="{1}"]\n'.format(i, color))
-                for i in range(self.N):
-                    if i in active:
-                        for j in range(self.N):
-                            if key_score in ['z_n', 'm_n']:
-                                if  np.sign(self.D[k, i]) != np.sign(self.D[k, j]) and A[i,j] > 0.01:
-                                    w = 0.4 + 2.0 * A[i,j]
-                                    fout.write('\t{} -> {}\t\t[penwidth={:.3f}]\n'.format(i, j, w))
-                            elif key_score in ['z_a', 'm_a']:
-                                # # Temporary modification
-                                if j != i and A[i, j] > 0.01:
-                                    w = 0.4 + 2.0 * A[i,j]
-                                    fout.write('\t{} -> {}\t\t[penwidth={:.3f}]\n'.format(i, j, w))
-
-                fout.write('}')
-            # call('"C:/Program Files (x86)/Graphviz/bin/dot" -Tpdf {0}.dot -o {0}.pdf'.format(path + fname))
-            # call('{0} -Tpng {1}.dot -o {1}.png'.format(graphviz_path, self.path + fname))
-            arguments = [graphviz_path, '-Tpng', '%s.dot'%(self.path + fname), '-o', '%s.png'%(self.path + fname)]
-            run(args=arguments)
+    def draw_network_graphviz(self, idx=0, draw_all=False, postfix=''):
+       self.population[idx].draw_network_graphviz(self.path + 'netw-G={:05d}-i={:03d}{}/'.format(self.G, idx, postfix), draw_all)
 
 
-    def draw_inventories(self):
-        A = self.population[0].A
-
-        # k = 0
-        for k in range(self.K):
-            Dk = self.D[k]
-            Rk, x = self.population[0].get_score(Dk)
-
-            fig, ax = plt.subplots(figsize=(8, 6))
-            ax.set_title('k={}, score={:.2f}, mean={:.2f}'.format(k, x, np.mean(Dk)))
-            ax.bar([i for i in range(self.N)], Dk, color='#fff2c9', lw=1.0, ec='#e89c0e', hatch="...", zorder=0)
-            ax.bar([i for i in range(self.N)], Rk, color='#c9dbff', lw=1.0, ec='#4b61a6', hatch="//", zorder=1)
-
-            ax.set_xlabel('node id')
-            ax.set_ylabel('demand level')
-            ax.grid(alpha = 0.4, linestyle = '--', linewidth = 0.2, color = 'black', zorder=0)
-
-            # plt.show()
-            plt.savefig(self.path + "d={}.png".format(k), dpi=400, bbox_inches = 'tight')
-            plt.close()
+    def draw_inventories(self, idx=0):
+       self.population[idx].draw_inventories(self.path + 'inv-G={:05d}-i={:03d}/'.format(self.G, idx))
 
 
-    def save_optimal_adj(self, idx=0, postfix=''):
+    def save_optimal_network(self, idx=0, postfix=''):
         fname = 'G={:05d}-i={:03d}{}.netw'.format(self.G, idx, postfix)
-        header = '# G={}, i={}, score={:.4f}, mode={}\n'.format(self.G, idx, self.population[idx].s, key_score)
-
-        with codecs.open(self.path + fname, 'w') as fout:
-            fout.write(header)
-            fout.write('# adjacency matrix A, N={}\n'.format(self.N))
-            for row in self.population[idx].A:
-                line = ' '.join(['%8.6f'%x for x in row])
-                fout.write(line + '\n')
-
-            fout.write('# demand pattern D, K={}\n'.format(self.K))
-            for row in self.D:
-                line = ' '.join(['%8.4f'%x for x in row])
-                fout.write(line + '\n')
-
-        # np.savetxt(self.path + fname, self.population[idx].A, '%.4f', header=h)
-
-
+        self.population[idx].save_network(self.path + fname)
 
 
     def save_optimal_edges(self, idx=0, postfix=''):
-        fname = 'G={:04d}-i={:02d}{}.edges'.format(self.G, idx, postfix)
-        
-        with codecs.open(self.path + fname, 'w') as fout:
-            for i in range(self.N):
-                for j in range(self.N):
-                    if self.population[idx].A[i,j] > 0.01:
-                        fout.write('{}\t{}\t1\n'.format(i+1, j+1))
+        fname = 'G={:05d}-i={:03d}{}.edges'.format(self.G, idx, postfix)
+        self.population[idx].save_edges(self.path + fname)
 
 
 
 
 
 if __name__ == "__main__":
-    N = 5
+    N = 6
     K = 6
     P = 50
-    G_max = 2001
+    G_max = 201
 
     for rd in range(1):
         print('New demand;', rd)
@@ -497,16 +525,16 @@ if __name__ == "__main__":
         xxx = Optimization_Problem_Wrapper(N, K, D, P)
         xxx.optimize(G_max)
 
-        # print(xxx.population[0])
-        xxx.save_optimal_adj(0, '-rd={:02d}'.format(rd))
-        xxx.save_optimal_edges(0)
-        xxx.draw_network_graphviz(draw_all=False, postfix='-rd={:02d}'.format(rd))
+        print(xxx.population[0])
+        print(xxx.population[0].get_robustness(mode='proportional'))
 
+        # xxx.save_optimal_network(0, '-rd={:02d}'.format(rd))
+        # xxx.save_optimal_edges(0, '-rd={:02d}'.format(rd))
+        # xxx.draw_network_graphviz(draw_all=True, postfix='-rd={:02d}'.format(rd))
 
         # xxx.plot_demand()
-        xxx.plot_convergence()
-        # xxx.draw_network_graphviz(draw_all=False)
-        xxx.draw_inventories()
+        # xxx.plot_convergence('-rd={:02d}'.format(rd))
+        # xxx.draw_inventories(0, )
 
 
 
