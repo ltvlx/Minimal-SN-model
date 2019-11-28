@@ -15,12 +15,15 @@ np.random.seed(0)
 # key for the function that calculates the score of a network.
 # z/m -- distance to zero/mean; n/a -- distribution from positive to negative/all demand
 # z_n -- default function
-key_score=['z_n', 'z_a', 'm_n', 'm_a'][1]
+key_score = ['z_n', 'z_a', 'm_n', 'm_a'][1]
+key_robust = ['make 0', 'proportional'][0]
+
 min_w = 0.01
 
 class TranspNetwork:
     N = 0
     s = None
+    r = None
     A = None
     D = None
 
@@ -50,31 +53,49 @@ class TranspNetwork:
 
 
     def evaluate(self, D=None):
-        # print(np.sum(self.A, axis=1))
         assert(np.all(np.sum(self.A, axis=1) < 1.01))
-
-        if D is None:
-            D = self.D
 
         for i, j in self.__matrix_iterator():
             if self.A[i, j] < min_w:
                 self.A[i, j] = 0
 
+        self.calculate_score(D)
+        self.calculate_robustness(D)
+
+
+    def calculate_score(self, D):
+        if D is None:
+            D = self.D
+
         self.s = 0.0
-        for k in range(D.shape[0]):
-            Rk, x = self.get_score(D[k])
+        for Dk in D:
+            Rk, x = self.__get_score(Dk)
             self.s += x
 
 
-    def get_score(self, Dk):
-        if key_score == 'z_n':
-            return self.__get_score_zero_pos2neg(Dk)
-        elif key_score == 'z_a':
-            return self.__get_score_zero_pos2all(Dk)
-        elif key_score == 'm_n':
-            return self.__get_score_mean_pos2neg(Dk)
-        elif key_score == 'm_a':
-            return self.__get_score_mean_pos2all(Dk)
+    def calculate_robustness(self, D, r_threshold=0.007):
+        n_lin = 0
+        n_rob = 0
+        for i, j in self.__matrix_iterator():
+            if self.A[i, j] > 0:
+                n_lin += 1
+                row = np.array(self.A[i])
+                s_init = self.s
+
+                self.A[i, j] = 0
+                if key_robust == 'proportional' and np.sum(self.A[i]) > 0:
+                    self.A[i] = self.A[i] / np.sum(self.A[i])
+                self.calculate_score(D)
+                s_rob = self.s
+
+                self.A[i] = row
+                self.s = s_init
+                rate = (s_rob - s_init) / s_init
+                
+                if rate <= r_threshold:
+                    n_rob += 1
+
+        self.r = n_rob / n_lin
 
 
     def mutate(self):
@@ -149,35 +170,6 @@ class TranspNetwork:
         return res
 
 
-    def get_robustness(self, mode='make 0', threshold=0.007):
-        assert(mode in ['make 0', 'proportional'])
-        print("Testing robustness. Mode='{}'".format(mode))
-
-        n_lin = 0
-        n_rob = 0
-        for i, j in self.__matrix_iterator():
-            if self.A[i, j] > 0:
-                n_lin += 1
-                row = np.array(self.A[i])
-                self.A[i, j] = 0
-
-                if mode == 'proportional':
-                    self.A[i] = self.A[i] / max(np.sum(self.A[i]), 1.0)
-
-                self.evaluate()
-                s_rob = self.s
-
-                self.A[i] = row
-                self.evaluate()
-                rate = (s_rob - self.s) / self.s
-                
-                if rate <= threshold:
-                    n_rob += 1
-
-                print('{} {} {:6.4f} {:6.2f} {:6.4f} {}'.format(i, j, self.A[i, j], s_rob, rate, rate <= threshold))
-
-        return n_rob / n_lin
-
     def copy(self):
         nw_out = TranspNetwork(self.N, self.D)
         nw_out.A = np.array(self.A)
@@ -196,6 +188,17 @@ class TranspNetwork:
 
     def __ne__(self, other):
         return not self.__eq__(other)
+
+
+    def __get_score(self, Dk):
+        if key_score == 'z_n':
+            return self.__get_score_zero_pos2neg(Dk)
+        elif key_score == 'z_a':
+            return self.__get_score_zero_pos2all(Dk)
+        elif key_score == 'm_n':
+            return self.__get_score_mean_pos2neg(Dk)
+        elif key_score == 'm_a':
+            return self.__get_score_mean_pos2all(Dk)
 
 
     def __get_score_zero_pos2neg(self, Dk):
@@ -308,7 +311,7 @@ class TranspNetwork:
 
         for k in range(np.shape(self.D)[0]):
             Dk = self.D[k]
-            Rk, x = self.get_score(Dk)
+            Rk, x = self.__get_score(Dk)
 
             fig, ax = plt.subplots(figsize=(8, 6))
             ax.set_title('k={}, score={:.2f}, mean={:.2f}'.format(k, x, np.mean(Dk)))
@@ -406,7 +409,7 @@ class Optimization_Problem_Wrapper:
     
     def optimize(self, G_max):
         self.scores_history = {0: [nw.s for nw in self.population]}
-        # print(self.scores_history)
+        self.robust_history = {0: [nw.r for nw in self.population]}
 
         for _g in range(1, G_max):
             mating_pool = self.population[:self.m['Parents']]
@@ -444,6 +447,7 @@ class Optimization_Problem_Wrapper:
             self.population.sort(key = lambda x: x.s, reverse=False)
 
             self.scores_history[_g] = [nw.s for nw in self.population]
+            self.robust_history[_g] = [nw.r for nw in self.population]
             self.G = _g
 
             if _g % 100 == 0:
@@ -477,6 +481,28 @@ class Optimization_Problem_Wrapper:
         plt.close()
 
 
+    def plot_robustness(self, postfix=''):
+        x = []
+        y = []
+        for _g, val in self.robust_history.items():
+            x.append(_g)
+            y.append(val[0])
+
+        fig, ax = plt.subplots(figsize=(6,4))
+
+        plt.plot(x, y, '-')
+
+        plt.title('N={}, K={}, P={}'.format(self.N, self.K, self.P))
+        ax.set_ylabel('robustness of the best')
+        ax.set_xlabel('generation')        
+
+        ax.grid(alpha = 0.4, linestyle = '--', linewidth = 0.2, color = 'black')
+
+        plt.savefig(self.path + 'robustness-P={}-G={}{}.png'.format(self.P, self.G, postfix), bbox_inches = 'tight', pad_inches=0.1, dpi=400)
+        # plt.show()
+        plt.close()
+
+
     def plot_demand(self):
         plt.figure(figsize=(4,4))
         for i in range(self.N):
@@ -495,8 +521,8 @@ class Optimization_Problem_Wrapper:
        self.population[idx].draw_network_graphviz(self.path + 'netw-G={:05d}-i={:03d}{}/'.format(self.G, idx, postfix), draw_all)
 
 
-    def draw_inventories(self, idx=0):
-       self.population[idx].draw_inventories(self.path + 'inv-G={:05d}-i={:03d}/'.format(self.G, idx))
+    def draw_inventories(self, idx=0, postfix=''):
+       self.population[idx].draw_inventories(self.path + 'inv-G={:05d}-i={:03d}{}/'.format(self.G, idx, postfix))
 
 
     def save_optimal_network(self, idx=0, postfix=''):
@@ -516,7 +542,7 @@ if __name__ == "__main__":
     N = 6
     K = 6
     P = 50
-    G_max = 201
+    G_max = 601
 
     for rd in range(1):
         print('New demand;', rd)
@@ -526,15 +552,17 @@ if __name__ == "__main__":
         xxx.optimize(G_max)
 
         print(xxx.population[0])
-        print(xxx.population[0].get_robustness(mode='proportional'))
+        print('Rob = ', xxx.population[0].r)
 
-        # xxx.save_optimal_network(0, '-rd={:02d}'.format(rd))
-        # xxx.save_optimal_edges(0, '-rd={:02d}'.format(rd))
-        # xxx.draw_network_graphviz(draw_all=True, postfix='-rd={:02d}'.format(rd))
+        xxx.save_optimal_network(0, '-rd={:02d}'.format(rd))
+        xxx.save_optimal_edges(0, '-rd={:02d}'.format(rd))
+        xxx.draw_inventories(0, '-rd={:02d}'.format(rd))
+        xxx.draw_network_graphviz(draw_all=True, postfix='-rd={:02d}'.format(rd))
 
+        xxx.plot_convergence('-rd={:02d}'.format(rd))
+        xxx.plot_robustness('-rd={:02d}'.format(rd))
         # xxx.plot_demand()
-        # xxx.plot_convergence('-rd={:02d}'.format(rd))
-        # xxx.draw_inventories(0, )
+
 
 
 
