@@ -15,8 +15,8 @@ np.random.seed(0)
 # key for the function that calculates the score of a network.
 # z/m -- distance to zero/mean; n/a -- distribution from positive to negative/all demand
 # z_n -- default function
-key_score = ['z_n', 'z_a', 'm_n', 'm_a'][1]
-key_robust = ['make 0', 'proportional'][0]
+key_score = ['z_n', 'z_a', 'm_n', 'm_a'][0]
+key_robust = ['make_0', 'proportional'][0]
 
 min_w = 0.01
 
@@ -60,7 +60,7 @@ class TranspNetwork:
                 self.A[i, j] = 0
 
         self.calculate_score(D)
-        self.calculate_robustness(D)
+        # self.calculate_robustness(D)
 
 
     def calculate_score(self, D):
@@ -73,7 +73,10 @@ class TranspNetwork:
             self.s += x
 
 
-    def calculate_robustness(self, D, r_threshold=0.007):
+    def calculate_robustness(self, D=None, r_threshold=0.007):
+        if D is None:
+            D = self.D
+
         n_lin = 0
         n_rob = 0
         for i, j in self.__matrix_iterator():
@@ -289,8 +292,9 @@ class TranspNetwork:
                     fout.write('{}\t{}\t1\n'.format(i+1, j+1))
 
 
-    def save_network(self, fpath='network.adj'):
-        header = '# score={:.4f}, mode={}\n'.format(self.s, key_score)
+    def save_network(self, fpath='network.netw'):
+        rob = '' if self.r is None else ', robustness={:.5f}, rob_setup={}'.format(self.r, key_robust)
+        header = '# score={:.4f}, opt_setup={}{}\n'.format(self.s, key_score, rob)
 
         with codecs.open(fpath, 'w') as fout:
             fout.write(header)
@@ -409,7 +413,7 @@ class Optimization_Problem_Wrapper:
     
     def optimize(self, G_max):
         self.scores_history = {0: [nw.s for nw in self.population]}
-        self.robust_history = {0: [nw.r for nw in self.population]}
+        # self.robust_history = {0: [nw.r for nw in self.population]}
 
         for _g in range(1, G_max):
             mating_pool = self.population[:self.m['Parents']]
@@ -447,7 +451,7 @@ class Optimization_Problem_Wrapper:
             self.population.sort(key = lambda x: x.s, reverse=False)
 
             self.scores_history[_g] = [nw.s for nw in self.population]
-            self.robust_history[_g] = [nw.r for nw in self.population]
+            # self.robust_history[_g] = [nw.r for nw in self.population]
             self.G = _g
 
             if _g % 100 == 0:
@@ -536,32 +540,92 @@ class Optimization_Problem_Wrapper:
 
 
 
+def heuristic_robustness_optimization(N, K, n_rd):
+    path = 'res-opt/heuristic-robustness/N={}-K={}-s={}-r={}/'.format(N, K, key_score, key_robust)
+
+    if not os.path.exists(path):
+        os.makedirs(path)
+    print('Heuristic optimization\n{}'.format(path))
+
+    G_s = 10000
+    G_r = 5000
+    s_threshold = 0.05
+
+    for rd in range(n_rd):
+        print('\nNew demand;', rd)
+        D = np.random.randint(-50, 50, size=(K, N))
+
+        NW = TranspNetwork(N, D)
+        for i in range(G_s):
+            NW_x = NW.copy()
+            NW_x.mutate()
+            if NW_x.s < NW.s:
+                NW = NW_x
+            
+            if i % 500 == 0:
+                print('({}, {:.4f})'.format(i, NW.s), end=' ', flush=True)
+        print()
+
+
+        s_min = NW.s
+        NW.calculate_robustness()
+        NW.save_network(path + 'rd={:02d}-best_s.netw'.format(rd))
+        NW.save_edges(path + 'rd={:02d}-best_s.edges'.format(rd))
+        print("Best score: {:.2f}, robustness: {:.4f}".format(s_min, NW.r))
+
+        for i in range(G_r):
+            NW_x = NW.copy()
+            NW_x.mutate()
+            if (NW_x.s - s_min) / s_min < s_threshold:
+                NW_x.calculate_robustness()
+                if NW_x.r >= NW.r:
+                    NW = NW_x
+
+            if i % 500 == 0:
+                print('({}, {:.4f}, {:.4f})'.format(i, NW.s, NW.r), end=' ', flush=True)
+                
+        print("Robustness optimization finished!\nFinal score: {:.2f}, robustness: {:.4f}".format(NW.s, NW.r))
+
+        NW.save_network(path + 'rd={:02d}-best_r.netw'.format(rd))
+        NW.save_edges(path + 'rd={:02d}-best_r.edges'.format(rd))
+
+
+
 
 
 if __name__ == "__main__":
-    N = 6
+    N = 5
     K = 6
     P = 50
     G_max = 601
 
-    for rd in range(1):
-        print('New demand;', rd)
-        D = np.random.randint(-50, 50, size=(K, N))
 
-        xxx = Optimization_Problem_Wrapper(N, K, D, P)
-        xxx.optimize(G_max)
+    heuristic_robustness_optimization(N, K, 1)
 
-        print(xxx.population[0])
-        print('Rob = ', xxx.population[0].r)
 
-        xxx.save_optimal_network(0, '-rd={:02d}'.format(rd))
-        xxx.save_optimal_edges(0, '-rd={:02d}'.format(rd))
-        xxx.draw_inventories(0, '-rd={:02d}'.format(rd))
-        xxx.draw_network_graphviz(draw_all=True, postfix='-rd={:02d}'.format(rd))
+    # for rd in range(1):
+    #     print('New demand;', rd)
+    #     D = np.random.randint(-50, 50, size=(K, N))
+    #     xxx = Optimization_Problem_Wrapper(N, K, D, P)
+    #     xxx.optimize(G_max)
 
-        xxx.plot_convergence('-rd={:02d}'.format(rd))
-        xxx.plot_robustness('-rd={:02d}'.format(rd))
-        # xxx.plot_demand()
+    #     print(xxx.population[0])
+    #     print('Rob = ', xxx.population[0].r)
+
+    #     xxx.save_optimal_network(0, '-rd={:02d}'.format(rd))
+    #     xxx.save_optimal_edges(0, '-rd={:02d}'.format(rd))
+    #     xxx.draw_inventories(0, '-rd={:02d}'.format(rd))
+    #     xxx.draw_network_graphviz(draw_all=True, postfix='-rd={:02d}'.format(rd))
+
+    #     xxx.plot_convergence('-rd={:02d}'.format(rd))
+    #     # xxx.plot_robustness('-rd={:02d}'.format(rd))
+    #     # xxx.plot_demand()
+
+
+
+
+
+
 
 
 
