@@ -26,6 +26,7 @@ class TranspNetwork:
     r = None
     A = None
     D = None
+    r_threshold = 0.007
 
     def __init__(self, N, D, A=None):
         """
@@ -69,11 +70,11 @@ class TranspNetwork:
 
         self.s = 0.0
         for Dk in D:
-            Rk, x = self.__get_score(Dk)
+            _, x = self.__get_score(Dk)
             self.s += x
 
 
-    def calculate_robustness(self, D=None, r_threshold=0.007):
+    def calculate_robustness(self, D=None):
         if D is None:
             D = self.D
 
@@ -95,7 +96,7 @@ class TranspNetwork:
                 self.s = s_init
                 rate = (s_rob - s_init) / s_init
                 
-                if rate <= r_threshold:
+                if rate <= self.r_threshold:
                     n_rob += 1
 
         self.r = n_rob / n_lin
@@ -176,6 +177,9 @@ class TranspNetwork:
     def copy(self):
         nw_out = TranspNetwork(self.N, self.D)
         nw_out.A = np.array(self.A)
+        nw_out.r = self.r
+        nw_out.r_threshold = self.r_threshold
+
         nw_out.evaluate()
         return nw_out
 
@@ -276,7 +280,8 @@ class TranspNetwork:
 
 
     def __repr__(self):
-        return "{:.1f}".format(self.s)
+        # return "{:.1f}".format(self.s)
+        return "({:.1f}, {:.3f})".format(self.s, self.r)
 
     
     def __matrix_iterator(self):
@@ -317,7 +322,7 @@ class TranspNetwork:
             Dk = self.D[k]
             Rk, x = self.__get_score(Dk)
 
-            fig, ax = plt.subplots(figsize=(8, 6))
+            _, ax = plt.subplots(figsize=(8, 6))
             ax.set_title('k={}, score={:.2f}, mean={:.2f}'.format(k, x, np.mean(Dk)))
             ax.bar([i for i in range(self.N)], Dk, color='#fff2c9', lw=1.0, ec='#e89c0e', hatch="...", zorder=0)
             ax.bar([i for i in range(self.N)], Rk, color='#c9dbff', lw=1.0, ec='#4b61a6', hatch="//", zorder=1)
@@ -414,6 +419,7 @@ class Optimization_Problem_Wrapper:
     def optimize(self, G_max):
         self.scores_history = {0: [nw.s for nw in self.population]}
         # self.robust_history = {0: [nw.r for nw in self.population]}
+        self.robust_history = {}
 
         for _g in range(1, G_max):
             mating_pool = self.population[:self.m['Parents']]
@@ -445,7 +451,7 @@ class Optimization_Problem_Wrapper:
 
             # Adding random solutions to fill the population
             if len(self.population) < self.P:
-                for i in range(self.P - len(self.population)):
+                for _ in range(self.P - len(self.population)):
                     x = TranspNetwork(self.N, self.D)
                     self.population.append(x)
             self.population.sort(key = lambda x: x.s, reverse=False)
@@ -470,7 +476,7 @@ class Optimization_Problem_Wrapper:
             x.append(_g)
             y.append(scores[0])
 
-        fig, ax = plt.subplots(figsize=(6,4))
+        _, ax = plt.subplots(figsize=(6,4))
 
         plt.plot(x, y, '-')
 
@@ -492,7 +498,7 @@ class Optimization_Problem_Wrapper:
             x.append(_g)
             y.append(val[0])
 
-        fig, ax = plt.subplots(figsize=(6,4))
+        _, ax = plt.subplots(figsize=(6,4))
 
         plt.plot(x, y, '-')
 
@@ -540,50 +546,87 @@ class Optimization_Problem_Wrapper:
 
 
 
-def heuristic_robustness_optimization(N, K, n_rd):
-    path = 'res-opt/heuristic-robustness/N={}-K={}-s={}-r={}/'.format(N, K, key_score, key_robust)
+def heuristic_robustness_optimization(N, K, n_rd, r_direction='max'):
+    def better_r(nw_a, nw_b):
+        if r_direction == 'max':
+            return nw_a.r > nw_b.r
+        else:
+             return nw_a.r < nw_b.r
+
+    G_s = 8000
+    G_r = 20000
+    ds_margin = 0.1
+    r_threshold = 0.03
+    
+    path = 'res-opt/heuristic-robustness/N={}-K={}-s={}-rt={:.2f}-{}/'.format(N, K, key_score, r_threshold, r_direction)
 
     if not os.path.exists(path):
         os.makedirs(path)
     print('Heuristic optimization\n{}'.format(path))
 
-    G_s = 10000
-    G_r = 5000
-    s_threshold = 0.05
 
     for rd in range(n_rd):
         print('\nNew demand;', rd)
         D = np.random.randint(-50, 50, size=(K, N))
-
         NW = TranspNetwork(N, D)
+        NW.r_threshold = r_threshold
+
+        nw_all = {'score': [], 'robustness': []}
+        nw_best = {'score': [], 'robustness': []}
         for i in range(G_s):
             NW_x = NW.copy()
             NW_x.mutate()
+            NW_x.calculate_robustness()
+            nw_all['score'].append(NW_x.s)
+            nw_all['robustness'].append(NW_x.r)
             if NW_x.s < NW.s:
                 NW = NW_x
-            
+                nw_best['score'].append(NW.s)
+                nw_best['robustness'].append(NW.r)
+
             if i % 500 == 0:
                 print('({}, {:.4f})'.format(i, NW.s), end=' ', flush=True)
         print()
 
-
         s_min = NW.s
-        NW.calculate_robustness()
         NW.save_network(path + 'rd={:02d}-best_s.netw'.format(rd))
         NW.save_edges(path + 'rd={:02d}-best_s.edges'.format(rd))
         print("Best score: {:.2f}, robustness: {:.4f}".format(s_min, NW.r))
 
+        nw_r_all = {'score': [], 'robustness': []}
+        nw_r_best = {'score': [NW.s], 'robustness': [NW.r]}
         for i in range(G_r):
             NW_x = NW.copy()
             NW_x.mutate()
-            if (NW_x.s - s_min) / s_min < s_threshold:
-                NW_x.calculate_robustness()
-                if NW_x.r >= NW.r:
+            NW_x.calculate_robustness()
+            nw_r_all['score'].append(NW_x.s)
+            nw_r_all['robustness'].append(NW_x.r)
+            if (NW_x.r == NW.r and NW_x.s < NW.s) or \
+                (better_r(NW_x, NW) and NW_x.s < s_min * (1 + ds_margin)):
+                # robustness the same but score is higher, or robustness is better and score is acceptable
                     NW = NW_x
-
+                    nw_r_best['score'].append(NW.s)
+                    nw_r_best['robustness'].append(NW.r)
             if i % 500 == 0:
                 print('({}, {:.4f}, {:.4f})'.format(i, NW.s, NW.r), end=' ', flush=True)
-                
+
+        _, ax = plt.subplots(figsize=(8,6))
+        plt.plot(nw_best['score'], nw_best['robustness'], 'o-', ms=2, color='C1', alpha=0.7, label='score best')
+        plt.scatter(nw_all['score'], nw_all['robustness'], s=5, facecolors='none', edgecolors='C0', alpha=0.4, label='score all')
+
+        plt.plot(nw_r_best['score'], nw_r_best['robustness'], 'o-', ms=2, color='C3', alpha=0.7, label='robust best')
+        plt.scatter(nw_r_all['score'], nw_r_all['robustness'], s=5, facecolors='none', edgecolors='C2', alpha=0.4, label='robust all')
+
+        plt.title('Heuristic robustness {}imization N={}, K={}, rt={:.3f}, Δs={:.3f}\nGs={}, Gr={}'\
+            .format(r_direction,N, K, r_threshold, 100*ds_margin, G_s, G_r))
+        ax.set_xlabel('score')
+        ax.set_ylabel('robustness')
+        ax.legend(loc='lower right')
+        ax.grid(alpha = 0.4, linestyle = '--', linewidth = 0.2, color = 'black')
+        plt.savefig(path + 'rd={:02d}-opt_conv-G={}-{:.3f}.png'.format(rd, G_s, r_threshold), bbox_inches = 'tight', pad_inches=0.1, dpi=400)
+        # plt.show()
+        plt.close()
+
         print("Robustness optimization finished!\nFinal score: {:.2f}, robustness: {:.4f}".format(NW.s, NW.r))
 
         NW.save_network(path + 'rd={:02d}-best_r.netw'.format(rd))
@@ -591,18 +634,14 @@ def heuristic_robustness_optimization(N, K, n_rd):
 
 
 
-
-
 if __name__ == "__main__":
-    N = 5
-    K = 6
-    P = 50
-    G_max = 601
+    N = 10
+    K = 15
+    heuristic_robustness_optimization(N, K, 1, 'max')
 
 
-    heuristic_robustness_optimization(N, K, 1)
-
-
+    # P = 50
+    # G_max = 601
     # for rd in range(1):
     #     print('New demand;', rd)
     #     D = np.random.randint(-50, 50, size=(K, N))
