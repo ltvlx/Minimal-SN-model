@@ -110,12 +110,10 @@ class TranspNetwork:
                 non_zero_rows.append(i)
 
         if non_zero_rows == []:
-            mut_type = np.random.choice(['rand_row', 'exch_val', 'swap_val'], p=[0.34, 0.33, 0.33])
+            mut_type = 'rand_row'
+            i = np.random.randint(0, self.N)
         else:
             mut_type = np.random.choice(['rand_row', 'exch_val', 'make_0', 'swap_val'], p=[0.25, 0.25, 0.25, 0.25])
-
-        i = np.random.randint(0, self.N)
-        if mut_type == 'make_0':
             i = np.random.choice(non_zero_rows)
 
         # print('Making a mutation "{}" with row i={}'.format(mut_type, i))
@@ -546,7 +544,7 @@ class Optimization_Problem_Wrapper:
 
 
 
-def heuristic_robustness_optimization(N, K, n_rd, r_direction='max'):
+def heuristic_annealing_optimization(N, K, n_seeds, n_runs=1, r_direction='max'):
     def better_r(nw_a, nw_b):
         if r_direction == 'max':
             return nw_a.r > nw_b.r
@@ -558,177 +556,199 @@ def heuristic_robustness_optimization(N, K, n_rd, r_direction='max'):
     ds_margin = 0.1
     r_threshold = 0.03
     
-    path = 'res-opt/heuristic-robustness/N={}-K={}-s={}-rt={:.2f}-{}/'.format(N, K, key_score, r_threshold, r_direction)
+    path = 'res-opt/heuristic-annealing/N={}-K={}-s={}-rt={:.2f}-{}/'.format(N, K, key_score, r_threshold, r_direction)
 
     if not os.path.exists(path):
         os.makedirs(path)
-    print('Heuristic optimization\n{}'.format(path))
+    print('Heuristic annealing optimization\n{}'.format(path))
 
 
-    for rd in range(n_rd):
-        print('\nNew demand;', rd)
+    for i_seed in range(n_seeds):
+        print('\nNew demand seed;', i_seed)
+        np.random.seed(i_seed)
         D = np.random.randint(-50, 50, size=(K, N))
-        NW = TranspNetwork(N, D)
-        NW.r_threshold = r_threshold
+		
+        for i_run in range(n_runs):
+            if n_runs > 1:
+                print('\n   new run;', i_run)
+                path_run = path + 'seed={:02d}-run={:02d}/'.format(i_seed, i_run)
+            else:
+                path_run = path + 'seed={:02d}/'.format(i_seed)
 
-        nw_all = {'score': [], 'robustness': []}
-        nw_best = {'score': [], 'robustness': []}
-        for i in range(G_s):
-            NW_x = NW.copy()
-            NW_x.mutate()
-            NW_x.calculate_robustness()
-            nw_all['score'].append(NW_x.s)
-            nw_all['robustness'].append(NW_x.r)
-            if NW_x.s < NW.s:
-                NW = NW_x
-                nw_best['score'].append(NW.s)
-                nw_best['robustness'].append(NW.r)
+            if not os.path.exists(path_run):
+                os.makedirs(path_run)
 
-            if i % 500 == 0:
-                print('({}, {:.4f})'.format(i, NW.s), end=' ', flush=True)
-        print()
+            NW = TranspNetwork(N, D)
+            NW.r_threshold = r_threshold
 
-        s_min = NW.s
-        NW.save_network(path + 'rd={:02d}-best_s.netw'.format(rd))
-        NW.save_edges(path + 'rd={:02d}-best_s.edges'.format(rd))
-        print("Best score: {:.2f}, robustness: {:.4f}".format(s_min, NW.r))
-
-        nw_r_all = {'score': [], 'robustness': []}
-        nw_r_best = {'score': [NW.s], 'robustness': [NW.r]}
-        for i in range(G_r):
-            NW_x = NW.copy()
-            NW_x.mutate()
-            NW_x.calculate_robustness()
-            nw_r_all['score'].append(NW_x.s)
-            nw_r_all['robustness'].append(NW_x.r)
-            if (NW_x.r == NW.r and NW_x.s < NW.s) or \
-                (better_r(NW_x, NW) and NW_x.s < s_min * (1 + ds_margin)):
-                # robustness the same but score is higher, or robustness is better and score is acceptable
+            nw_all = {'score': [], 'robustness': []}
+            nw_best = {'score': [], 'robustness': []}
+            for i in range(G_s):
+                NW_x = NW.copy()
+                NW_x.mutate()
+                NW_x.calculate_robustness()
+                nw_all['score'].append(NW_x.s)
+                nw_all['robustness'].append(NW_x.r)
+                if NW_x.s < NW.s:
                     NW = NW_x
-                    nw_r_best['score'].append(NW.s)
-                    nw_r_best['robustness'].append(NW.r)
-            if i % 500 == 0:
-                print('({}, {:.4f}, {:.4f})'.format(i, NW.s, NW.r), end=' ', flush=True)
+                    nw_best['score'].append(NW.s)
+                    nw_best['robustness'].append(NW.r)
 
-        _, ax = plt.subplots(figsize=(8,6))
-        plt.plot(nw_best['score'], nw_best['robustness'], 'o-', ms=2, color='C1', alpha=0.7, label='score best')
-        plt.scatter(nw_all['score'], nw_all['robustness'], s=5, facecolors='none', edgecolors='C0', alpha=0.4, label='score all')
+                if i % 500 == 0:
+                    print('({}, {:.4f})'.format(i, NW.s), end=' ', flush=True)
+            print()
 
-        plt.plot(nw_r_best['score'], nw_r_best['robustness'], 'o-', ms=2, color='C3', alpha=0.7, label='robust best')
-        plt.scatter(nw_r_all['score'], nw_r_all['robustness'], s=5, facecolors='none', edgecolors='C2', alpha=0.4, label='robust all')
+            s_min = NW.s
+            NW.save_network(path_run + 'Gs={:05d}-best_s.netw'.format(G_s))
+            NW.save_edges(path_run + 'Gs={:05d}-best_s.edges'.format(G_s))
+            print("Best score: {:.2f}, robustness: {:.4f}".format(s_min, NW.r))
 
-        plt.title('Heuristic robustness {}imization N={}, K={}, rt={:.3f}, Δs={:.3f}\nGs={}, Gr={}'\
-            .format(r_direction,N, K, r_threshold, 100*ds_margin, G_s, G_r))
-        ax.set_xlabel('score')
-        ax.set_ylabel('robustness')
-        ax.legend(loc='lower right')
-        ax.grid(alpha = 0.4, linestyle = '--', linewidth = 0.2, color = 'black')
-        plt.savefig(path + 'rd={:02d}-opt_conv-G={}-{:.3f}.png'.format(rd, G_s, r_threshold), bbox_inches = 'tight', pad_inches=0.1, dpi=400)
-        # plt.show()
-        plt.close()
+            nw_r_all = {'score': [], 'robustness': []}
+            nw_r_best = {'score': [NW.s], 'robustness': [NW.r]}
+            for i in range(G_r):
+                NW_x = NW.copy()
+                NW_x.mutate()
+                NW_x.calculate_robustness()
+                nw_r_all['score'].append(NW_x.s)
+                nw_r_all['robustness'].append(NW_x.r)
+                if (NW_x.r == NW.r and NW_x.s < NW.s) or \
+                    (better_r(NW_x, NW) and NW_x.s < s_min * (1 + ds_margin)):
+                    # robustness the same but score is higher, or robustness is better and score is acceptable
+                        NW = NW_x
+                        nw_r_best['score'].append(NW.s)
+                        nw_r_best['robustness'].append(NW.r)
+                if i % 500 == 0:
+                    print('({}, {:.4f}, {:.4f})'.format(i, NW.s, NW.r), end=' ', flush=True)
 
-        print("Robustness optimization finished!\nFinal score: {:.2f}, robustness: {:.4f}".format(NW.s, NW.r))
+            _, ax = plt.subplots(figsize=(8,6))
+            plt.plot(nw_best['score'], nw_best['robustness'], 'o-', ms=2, color='C1', alpha=0.7, label='score best')
+            plt.scatter(nw_all['score'], nw_all['robustness'], s=5, facecolors='none', edgecolors='C0', alpha=0.4, label='score all')
 
-        NW.save_network(path + 'rd={:02d}-best_r.netw'.format(rd))
-        NW.save_edges(path + 'rd={:02d}-best_r.edges'.format(rd))
+            plt.plot(nw_r_best['score'], nw_r_best['robustness'], 'o-', ms=2, color='C3', alpha=0.7, label='robust best')
+            plt.scatter(nw_r_all['score'], nw_r_all['robustness'], s=5, facecolors='none', edgecolors='C2', alpha=0.4, label='robust all')
+
+            plt.title('Heuristic annealing robustness {}imization\nN={}, K={}, rt={:.3f}, Δs={:.3f}\nGs={}, Gr={}'\
+                .format(r_direction,N, K, r_threshold, 100*ds_margin, G_s, G_r))
+            ax.set_xlabel('score')
+            ax.set_ylabel('robustness')
+            ax.legend(loc='lower right')
+            ax.grid(alpha = 0.4, linestyle = '--', linewidth = 0.2, color = 'black')
+            plt.savefig(path_run + 'opt_conv-Gs={:05d}-Gr={:05d}.png'.format(G_s, G_r), bbox_inches = 'tight', pad_inches=0.1, dpi=400)
+            # plt.show()
+            plt.close()
+
+            print("Robustness optimization finished!\nFinal score: {:.2f}, robustness: {:.4f}".format(NW.s, NW.r))
+            NW.save_network(path_run + 'Gr={:05d}-best_r.netw'.format(G_r))
+            NW.save_edges(path_run + 'Gr={:05d}-best_r.edges'.format(G_r))
 
 
 
-def heuristic_pareto_optimization(N, K, n_rd):
-    G_max = 100001
+def pareto_optimization(N, K, n_seeds, n_runs=1):
+    G_max = 10001
     r_threshold = 0.05
 
-    path = 'res-opt/heuristic-pareto/N={}-K={}-s={}-rt={:.3f}/'.format(N, K, key_score, r_threshold)
+    path = 'res-opt/pareto/N={}-K={}-s={}-rt={:.3f}/'.format(N, K, key_score, r_threshold)
 
     if not os.path.exists(path):
         os.makedirs(path)
-    print('Heuristic optimization\n{}'.format(path))
+    print('Pareto optimization\n{}'.format(path))
 
-    for rd in range(n_rd):
-        print('\nNew demand;', rd)
+    for i_seed in range(n_seeds):
+        print('\nNew demand seed;', i_seed)
+        np.random.seed(i_seed)
         D = np.random.randint(-50, 50, size=(K, N))
-        NW = TranspNetwork(N, D)
-        NW.r_threshold = r_threshold
-        NW.calculate_robustness()
-
-        nw_all = {'score': [NW.s], 'robustness': [NW.r]}
-        pareto_best = [NW]
-        pareto_hr = []
-        pareto_lr = []
-        min_s = NW.s
-        max_r = NW.r
-        min_r = NW.r
-
-
-        for i in range(G_max):
-            pareto_ranged = [[] for _ in range(10)]
-            for _nw in pareto_best + pareto_hr + pareto_lr:
-                j = int(_nw.r*10) if _nw.r < 1.0 else 9
-                pareto_ranged[j].append(_nw)
-            non_zero_ranges = [j for j in range(10) if len(pareto_ranged[j]) > 0]
-
-            r_idx = np.random.choice(non_zero_ranges)
-            nw_mut = np.random.choice(pareto_ranged[r_idx]).copy()
-
-            nw_mut.mutate()
-            nw_mut.calculate_robustness()
-            nw_all['score'].append(nw_mut.s)
-            nw_all['robustness'].append(nw_mut.r)
-
-            if nw_mut.s < min_s:
-                # print("Case 0. Replace pareto_best")
-                min_s = nw_mut.s
-                max_r = nw_mut.r
-                min_r = nw_mut.r
-                
-                elems_to_place = pareto_best + pareto_hr + pareto_lr
-                elems_to_place.sort(key = lambda x: x.s)
-                pareto_best = [nw_mut]
-                pareto_hr = []
-                pareto_lr = []
-
+					
+        for i_run in range(n_runs):
+            if n_runs > 1:
+                print('\n   new run;', i_run)
+                path_run = path + 'seed={:02d}-run={:02d}/'.format(i_seed, i_run)
             else:
-                elems_to_place = [nw_mut]
+                path_run = path + 'seed={:02d}/'.format(i_seed)
 
-            for _nw in elems_to_place:
-                pareto_best, max_r, min_r, pareto_hr, pareto_lr, nw_mut = place_elem(pareto_best, min_s, max_r, min_r, pareto_hr, pareto_lr, _nw)
+            if not os.path.exists(path_run):
+                os.makedirs(path_run)
+            NW = TranspNetwork(N, D)
+            NW.r_threshold = r_threshold
+            NW.calculate_robustness()
+
+            nw_all = {'score': [NW.s], 'robustness': [NW.r]}
+            pareto_best = [NW]
+            pareto_hr = []
+            pareto_lr = []
+            min_s = NW.s
+            max_r = NW.r
+            min_r = NW.r
 
 
-            if i > 0 and i % 1000 == 0:
-                print('({}, {:.3f}, {:.4f}, {:.4f})'.format(i, min_s, max_r, min_r), end=' ', flush=True)
-                print()
-
-                _, ax = plt.subplots(figsize=(8,6))
-                plt.scatter(nw_all['score'], nw_all['robustness'], s=2, edgecolors='C0', alpha=0.4, label='all')
-                
-                pareto_best.sort(key = lambda x: x.r)
-                plt.plot([x.s for x in pareto_best], [x.r for x in pareto_best], 'o-', ms=4, color='C3', alpha=0.7, label='pareto best')
-
-                pareto_hr.sort(key = lambda x: x.r)
-                plt.plot([x.s for x in pareto_hr], [x.r for x in pareto_hr], 'o-', ms=4, color='C1', alpha=0.7, label='pareto HR')
-
-                pareto_lr.sort(key = lambda x: x.r)
-                plt.plot([x.s for x in pareto_lr], [x.r for x in pareto_lr], 'o-', ms=4, color='C2', alpha=0.7, label='pareto LR')
-
-                plt.title('Pareto optimization N={}, K={}, rt={:.3f}\nG={}'.format(N, K, r_threshold, i))
-                ax.set_xlabel('score')
-                ax.set_ylabel('robustness')
-                ax.legend(loc='lower right')
-                ax.grid(alpha = 0.4, linestyle = '--', linewidth = 0.2, color = 'black')
-
-                plt.savefig(path + 'rd={:02d}-opt_conv-G={}-{:.3f}.png'.format(rd, i, r_threshold), bbox_inches = 'tight', pad_inches=0.1, dpi=400)
-                plt.close()
-
-            if i > 0 and i % 5000 == 0:
-                j = 0
+            for i in range(G_max):
+                pareto_ranged = [[] for _ in range(10)]
                 for _nw in pareto_best + pareto_hr + pareto_lr:
-                    save_path = path + 'rd={:02d}-G_{:05d}/'.format(rd, i)
-                    if not os.path.exists(save_path):
-                        os.makedirs(save_path)
+                    j = int(_nw.r*10) if _nw.r < 1.0 else 9
+                    pareto_ranged[j].append(_nw)
+                non_zero_ranges = [j for j in range(10) if len(pareto_ranged[j]) > 0]
 
-                    _nw.save_network(save_path + 'i={:04d}.netw'.format(j))
-                    _nw.save_edges(save_path + 'i={:04d}.edges'.format(j))
-                    j += 1
+                r_idx = np.random.choice(non_zero_ranges)
+                nw_mut = np.random.choice(pareto_ranged[r_idx]).copy()
+
+                nw_mut.mutate()
+                nw_mut.calculate_robustness()
+                nw_all['score'].append(nw_mut.s)
+                nw_all['robustness'].append(nw_mut.r)
+
+                if nw_mut.s < min_s:
+                    # print("Case 0. Replace pareto_best")
+                    min_s = nw_mut.s
+                    max_r = nw_mut.r
+                    min_r = nw_mut.r
+                    
+                    elems_to_place = pareto_best + pareto_hr + pareto_lr
+                    elems_to_place.sort(key = lambda x: x.s)
+                    pareto_best = [nw_mut]
+                    pareto_hr = []
+                    pareto_lr = []
+
+                else:
+                    elems_to_place = [nw_mut]
+
+                for _nw in elems_to_place:
+                    pareto_best, max_r, min_r, pareto_hr, pareto_lr, nw_mut = place_elem(pareto_best, min_s, max_r, min_r, pareto_hr, pareto_lr, _nw)
+
+
+                if i > 0 and i % 1000 == 0:
+                    print('({}, {:.3f}, {:.4f}, {:.4f})'.format(i, min_s, max_r, min_r), end=' ', flush=True)
+                    print()
+
+                    _, ax = plt.subplots(figsize=(8,6))
+                    plt.scatter(nw_all['score'], nw_all['robustness'], s=2, edgecolors='C0', alpha=0.4, label='all')
+                    
+                    pareto_best.sort(key = lambda x: x.r)
+                    plt.plot([x.s for x in pareto_best], [x.r for x in pareto_best], 'o-', ms=4, color='C3', alpha=0.7, label='pareto best')
+
+                    pareto_hr.sort(key = lambda x: x.r)
+                    plt.plot([x.s for x in pareto_hr], [x.r for x in pareto_hr], 'o-', ms=4, color='C1', alpha=0.7, label='pareto HR')
+
+                    pareto_lr.sort(key = lambda x: x.r)
+                    plt.plot([x.s for x in pareto_lr], [x.r for x in pareto_lr], 'o-', ms=4, color='C2', alpha=0.7, label='pareto LR')
+
+                    plt.title('Pareto optimization N={}, K={}, rt={:.3f}\nG={:05d}'.format(N, K, r_threshold, i))
+                    ax.set_xlabel('score')
+                    ax.set_ylabel('robustness')
+                    ax.legend(loc='lower right')
+                    ax.grid(alpha = 0.4, linestyle = '--', linewidth = 0.2, color = 'black')
+
+                    plt.savefig(path_run + 'opt_conv-G={}-{:.3f}.png'.format(i, r_threshold), bbox_inches = 'tight', pad_inches=0.1, dpi=400)
+                    plt.close()
+
+                if i > 0 and i % 5000 == 0:
+                    j = 0
+                    for _nw in sorted(pareto_lr + pareto_best + pareto_hr, key=lambda x: x.r):
+                        save_path = path_run + 'G_{:05d}/'.format(i)
+                        if not os.path.exists(save_path):
+                            os.makedirs(save_path)
+
+                        _nw.save_network(save_path + 'i={:04d}.netw'.format(j))
+                        _nw.save_edges(save_path + 'i={:04d}.edges'.format(j))
+                        j += 1
 
 
 def add_to_HR(pareto_hr, nw_mut):
@@ -791,9 +811,9 @@ def place_elem(pareto_best, min_s, max_r, min_r, pareto_hr, pareto_lr, nw_mut):
 
 if __name__ == "__main__":
     N = 10
-    K = 15
-    heuristic_robustness_optimization(N, K, 1, 'max')
-    heuristic_pareto_optimization(N, K, 1)
+    K = 1
+    pareto_optimization(N, K, 1)
+    # heuristic_annealing_optimization(N, K, 1, 1, 'min')
 
 
     # P = 50
