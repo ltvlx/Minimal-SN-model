@@ -102,6 +102,36 @@ class TranspNetwork:
         self.r = n_rob / n_lin
 
 
+    def calculate_NPR_robustness(self, D=None):
+        """
+        Modification of the robustness definition.
+        Instead of defining the robustness as the percentage of links, 
+        whose removal yields acceptable score decrease (s_1 - s_0 < rt * s_0; rt=1%-10%),
+        the non-parametric robustness is the average score of the network obtained via the links removal compared to the initial score.
+        """
+        if D is None:
+            D = self.D
+        
+        self.r = 0.0
+        s_init = self.s
+        n_edge = np.sum(self.A > 0)
+
+        for i, j in self.__matrix_iterator():
+            if self.A[i, j] > 0:
+                a_ij = self.A[i, j]
+                self.A[i, j] = 0
+                if key_robust == 'proportional' and np.sum(self.A[i]) > 0:
+                    self.A[i] = self.A[i] / np.sum(self.A[i])
+                self.calculate_score(D)
+
+                self.r += self.s
+
+                self.A[i, j] = a_ij
+
+        self.s = s_init
+        self.r = self.r / s_init / n_edge - 1.0
+
+
     def mutate(self):
         non_zero_rows = []
         for i in range(self.N):
@@ -274,7 +304,7 @@ class TranspNetwork:
 
 
     def __str__(self):
-        return "\nA:\n{}\nscore = {:.2f}".format(self.A, self.s)
+        return "\nA:\n{}\nscore = {:.2f}, robustness = {}".format(self.A, self.s, self.r)
 
 
     def __repr__(self):
