@@ -584,7 +584,7 @@ def heuristic_annealing_optimization(N, K, n_seeds, n_runs=1, r_direction='max')
     G_s = 8000
     G_r = 20000
     ds_margin = 0.1
-    r_threshold = 0.03
+    r_threshold = 0.01
     
     path = 'res-opt/heuristic-annealing/N={}-K={}-s={}-rt={:.2f}-{}/'.format(N, K, key_score, r_threshold, r_direction)
 
@@ -673,8 +673,117 @@ def heuristic_annealing_optimization(N, K, n_seeds, n_runs=1, r_direction='max')
 
 
 
+
+def simulated_annealing_optimization(N, K, n_seeds, n_runs=1, r_direction='max'):
+    G = 20001
+    r_threshold = 0.01
+    sigma = 0.05
+
+    def better_r(rob_a, rob_b):
+        if r_direction == 'max':
+            return rob_a >= rob_b
+        else:
+             return rob_a <= rob_b
+
+    def draw_convergence(nw_all, nw_best, i, NW):
+            _, ax = plt.subplots(figsize=(8,6))
+            plt.plot(nw_best['score'][-200:], nw_best['robustness'][-200:], '-', lw=0.4, color='C3', alpha=0.8, label='track')
+            plt.scatter(nw_all['score'], nw_all['robustness'], s=5, facecolors='none', edgecolors='C0', alpha=0.4, label='all')
+            plt.scatter(NW.s, NW.r, s=25, color='C3', alpha=1.0, label='best', zorder=3)
+
+            plt.title('Simulated annealing robustness {}imization\nN={}, K={}, rt={:.3f}, σ={}\nG={}'.format(r_direction,N, K, r_threshold, sigma, i))
+            ax.set_xlabel('score')
+            ax.set_ylabel('robustness')
+            ax.legend(loc='lower right')
+            ax.grid(alpha = 0.4, linestyle = '--', linewidth = 0.2, color = 'black')
+            plt.savefig(path_run + 'opt_conv-G={:05d}.png'.format(i), bbox_inches = 'tight', pad_inches=0.1, dpi=400)
+            # plt.show()
+            plt.close()
+
+    
+    path = 'res-opt/simulated_annealing/N={}-K={}-s={}-rt={:.2f}-{}/'.format(N, K, key_score, r_threshold, r_direction)
+
+    if not os.path.exists(path):
+        os.makedirs(path)
+    print('Simulated annealing optimization\n{}'.format(path))
+
+
+    for i_seed in range(n_seeds):
+        print('\nNew demand seed;', i_seed)
+        np.random.seed(i_seed)
+        D = np.random.randint(-50, 50, size=(K, N))
+		
+        for i_run in range(n_runs):
+            if n_runs > 1:
+                print('\n   new run;', i_run)
+                path_run = path + 'seed={:02d}-run={:02d}/'.format(i_seed, i_run)
+            else:
+                path_run = path + 'seed={:02d}/'.format(i_seed)
+
+            if not os.path.exists(path_run):
+                os.makedirs(path_run)
+
+            NW = TranspNetwork(N, D)
+            NW.calculate_robustness()
+            NW.r_threshold = r_threshold
+
+            nw_all = {'score': [], 'robustness': []}
+            nw_best = {'score': [], 'robustness': []}
+            for i in range(G):
+                NW_1 = NW.copy()
+                NW_1.mutate()
+                NW_1.calculate_robustness()
+                nw_all['score'].append(NW_1.s)
+                nw_all['robustness'].append(NW_1.r)
+
+                s, s1 = NW.s, NW_1.s
+                r, r1 = NW.r, NW_1.r
+                # print('{:6d}  initial: ({:.2f}, {:.4f}),   mutated: ({:.2f}, {:.4f})'.format(i, s, r, s1, r1))
+
+                if s1 <= s and better_r(r1, r):
+                    NW = NW_1
+                    nw_best['score'].append(s1)
+                    nw_best['robustness'].append(r1)
+                elif s1 <= s and not better_r(r1, r):
+                    # T = G * sigma / i;  p = e**(-1 / T)
+                    prob = np.exp(-i / G / sigma)
+                    # print('Worse robustness, p = {:.5f}'.format(prob))
+                    if np.random.random() <= prob:
+                        # print('--accepted!')
+                        NW = NW_1
+                        nw_best['score'].append(NW.s)
+                        nw_best['robustness'].append(NW.r)
+                elif better_r(r1, r) and s1 > s:
+                    prob = np.exp(-i / G / sigma) / 4
+                    prob_s = 10 ** (-2 * (s1 - s) / (s1 + s) / sigma)
+                    # print('Worse score, p = {:.5f}, ps = {:.5}, total = {:.5}'.format(prob, prob_s, prob * prob_s))
+                    if np.random.random() <= prob * prob_s:
+                        # print('--accepted!')
+                        NW = NW_1
+                        nw_best['score'].append(NW.s)
+                        nw_best['robustness'].append(NW.r)
+                else:
+                    prob = np.exp(-i / G / sigma) / 5
+                    prob_s = 10 ** (-2 * (s1 - s) / (s1 + s) / sigma)
+                    # print('Both worse, p = {:.5f}, ps = {:.5}, total = {:.5}'.format(prob, prob_s, prob * prob_s))
+                    if np.random.random() <= prob * prob_s:
+                        # print('--accepted!')
+                        NW = NW_1
+                        nw_best['score'].append(NW.s)
+                        nw_best['robustness'].append(NW.r)
+
+                if i > 0 and i % 2000 == 0:
+                    print('({}, {:.4f})'.format(i, NW.s), end=' ', flush=True)
+                    NW.save_network(path_run + 'G={:05d}-best_s.netw'.format(i))
+                    NW.save_edges(path_run + 'G={:05d}-best_s.edges'.format(i))
+                    draw_convergence(nw_all, nw_best, i, NW)
+
+
+
+
+
 def pareto_optimization(N, K, n_seeds, n_runs=1):
-    G_max = 10001
+    G_max = 100001
     r_threshold = 0.05
 
     path = 'res-opt/pareto/N={}-K={}-s={}-rt={:.3f}/'.format(N, K, key_score, r_threshold)
@@ -744,7 +853,7 @@ def pareto_optimization(N, K, n_seeds, n_runs=1):
                     pareto_best, max_r, min_r, pareto_hr, pareto_lr, nw_mut = place_elem(pareto_best, min_s, max_r, min_r, pareto_hr, pareto_lr, _nw)
 
 
-                if i > 0 and i % 1000 == 0:
+                if i > 0 and i % 10000 == 0:
                     print('({}, {:.3f}, {:.4f}, {:.4f})'.format(i, min_s, max_r, min_r), end=' ', flush=True)
                     print()
 
@@ -769,7 +878,7 @@ def pareto_optimization(N, K, n_seeds, n_runs=1):
                     plt.savefig(path_run + 'opt_conv-G={}-{:.3f}.png'.format(i, r_threshold), bbox_inches = 'tight', pad_inches=0.1, dpi=400)
                     plt.close()
 
-                if i > 0 and i % 5000 == 0:
+                if i > 0 and i % 20000 == 0:
                     j = 0
                     for _nw in sorted(pareto_lr + pareto_best + pareto_hr, key=lambda x: x.r):
                         save_path = path_run + 'G_{:05d}/'.format(i)
@@ -842,8 +951,9 @@ def place_elem(pareto_best, min_s, max_r, min_r, pareto_hr, pareto_lr, nw_mut):
 if __name__ == "__main__":
     N = 10
     K = 1
-    pareto_optimization(N, K, 1)
+    # pareto_optimization(N, K, n_seeds=100, n_runs=1)
     # heuristic_annealing_optimization(N, K, 1, 1, 'min')
+    simulated_annealing_optimization(N, K, n_seeds=100, n_runs=1, r_direction='min')
 
 
     # P = 50
