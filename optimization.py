@@ -5,12 +5,12 @@ import os
 import codecs
 from subprocess import run
 from platform import system
-
+import random
 
 
 np.set_printoptions(precision=4, suppress=True)
 np.random.seed(0)
-
+random.seed(0)
 
 # key for the function that calculates the score of a network.
 # z/m -- distance to zero/mean; n/a -- distribution from positive to negative/all demand
@@ -27,6 +27,8 @@ class TranspNetwork:
     A = None
     D = None
     r_threshold = 0.007
+
+    edges = set()
 
     def __init__(self, N, D, A=None):
         """
@@ -56,9 +58,20 @@ class TranspNetwork:
     def evaluate(self, D=None):
         assert(np.all(np.sum(self.A, axis=1) < 1.01))
 
-        for i, j in self.__matrix_iterator():
-            if self.A[i, j] < min_w:
-                self.A[i, j] = 0
+        self.edges = set()
+        for i in range(N):
+            for j in range(N):
+                if self.A[i, j] < min_w:
+                    self.A[i, j] = 0
+                else:
+                    self.edges.add((i,j))
+
+        # Restricting the number of edges
+        while len(self.edges) > self.N * 5:
+            i, j = random.sample(self.edges, 1)[0]
+            self.edges.remove((i, j))
+            self.A[i, j] = 0
+
 
         self.calculate_score(D)
         # self.calculate_robustness(D)
@@ -73,6 +86,11 @@ class TranspNetwork:
             _, x = self.__get_score(Dk)
             self.s += x
 
+        # # Penalty function for too many edges
+        # if len(self.edges) > self.N * 2:
+        #     # self.s *= 1.05 ** (self.M - self.N * 2)
+        #     self.s *= 2
+
 
     def calculate_robustness(self, D=None):
         if D is None:
@@ -80,24 +98,23 @@ class TranspNetwork:
 
         n_lin = 0
         n_rob = 0
-        for i, j in self.__matrix_iterator():
-            if self.A[i, j] > 0:
-                n_lin += 1
-                row = np.array(self.A[i])
-                s_init = self.s
+        for i, j in self.edges:
+            n_lin += 1
+            row = np.array(self.A[i])
+            s_init = self.s
 
-                self.A[i, j] = 0
-                if key_robust == 'proportional' and np.sum(self.A[i]) > 0:
-                    self.A[i] = self.A[i] / np.sum(self.A[i])
-                self.calculate_score(D)
-                s_rob = self.s
+            self.A[i, j] = 0
+            if key_robust == 'proportional' and np.sum(self.A[i]) > 0:
+                self.A[i] = self.A[i] / np.sum(self.A[i])
+            self.calculate_score(D)
+            s_rob = self.s
 
-                self.A[i] = row
-                self.s = s_init
-                rate = (s_rob - s_init) / s_init
-                
-                if rate <= self.r_threshold:
-                    n_rob += 1
+            self.A[i] = row
+            self.s = s_init
+            rate = (s_rob - s_init) / s_init
+            
+            if rate <= self.r_threshold:
+                n_rob += 1
 
         self.r = n_rob / n_lin
 
@@ -116,17 +133,16 @@ class TranspNetwork:
         s_init = self.s
         n_edge = np.sum(self.A > 0)
 
-        for i, j in self.__matrix_iterator():
-            if self.A[i, j] > 0:
-                a_ij = self.A[i, j]
-                self.A[i, j] = 0
-                if key_robust == 'proportional' and np.sum(self.A[i]) > 0:
-                    self.A[i] = self.A[i] / np.sum(self.A[i])
-                self.calculate_score(D)
+        for i, j in self.edges:
+            a_ij = self.A[i, j]
+            self.A[i, j] = 0
+            if key_robust == 'proportional' and np.sum(self.A[i]) > 0:
+                self.A[i] = self.A[i] / np.sum(self.A[i])
+            self.calculate_score(D)
 
-                self.r += self.s
+            self.r += self.s
 
-                self.A[i, j] = a_ij
+            self.A[i, j] = a_ij
 
         self.s = s_init
         self.r = self.r / s_init / n_edge - 1.0
@@ -207,6 +223,7 @@ class TranspNetwork:
         nw_out.A = np.array(self.A)
         nw_out.r = self.r
         nw_out.r_threshold = self.r_threshold
+        nw_out.edges = set(self.edges)
 
         nw_out.evaluate()
         return nw_out
@@ -311,18 +328,11 @@ class TranspNetwork:
         # return "{:.1f}".format(self.s)
         return "({:.1f}, {:.3f})".format(self.s, self.r)
 
-    
-    def __matrix_iterator(self):
-        for i in range(self.N):
-            for j in range(self.N):
-                yield (i, j)
-
 
     def save_edges(self, fpath='network.edges'):
         with codecs.open(fpath, 'w') as fout:
-            for i, j in self.__matrix_iterator():
-                if self.A[i,j] > 0:
-                    fout.write('{}\t{}\t1\n'.format(i+1, j+1))
+            for i, j in self.edges:
+                fout.write('{}\t{}\t1\n'.format(i+1, j+1))
 
 
     def save_network(self, fpath='network.netw'):
@@ -331,7 +341,7 @@ class TranspNetwork:
 
         with codecs.open(fpath, 'w') as fout:
             fout.write(header)
-            fout.write('# adjacency matrix A, N={}\n'.format(self.N))
+            fout.write('# adjacency matrix A, M={}, N={}\n'.format(len(self.edges), self.N))
             for row in self.A:
                 line = ' '.join(['%8.6f'%x for x in row])
                 fout.write(line + '\n')
@@ -377,10 +387,9 @@ class TranspNetwork:
             fout.write('\tnode [fixedsize=true, fontname=helvetica, fontsize=10, label="\\N", shape=circle, style=solid];\n')
             for i in range(self.N):
                 fout.write('\t{0}\t\t[label="{0}"; width=1.0]\n'.format(i))
-            for i, j in self.__matrix_iterator():
-                if self.A[i,j] > 0:
-                    w = 0.4 + 2.0 * self.A[i,j]
-                    fout.write('\t{} -> {}\t\t[penwidth={:.3f}]\n'.format(i, j, w))
+            for i, j in self.edges:
+                w = 0.4 + 2.0 * self.A[i,j]
+                fout.write('\t{} -> {}\t\t[penwidth={:.3f}]\n'.format(i, j, w))
             fout.write('}')
         arguments = [graphviz_path, '-Tpng', '%s.dot'%(path + fname), '-o', '%s.png'%(path + fname)]
         run(args=arguments)
@@ -401,8 +410,8 @@ class TranspNetwork:
                         active.append(i)
                         color = '#b2df8a'
                     fout.write('\t{0}\t\t[label="{0}"; width=1.0; "style"= "filled"; "fillcolor"="{1}"]\n'.format(i, color))
-                for i, j in self.__matrix_iterator():
-                    if i in active and self.A[i,j] > 0:
+                for i, j in self.edges:
+                    if i in active:
                         if self.D[k, j] < 0 or key_score in ['z_a', 'm_a']:
                             w = 0.4 + 2.0 * self.A[i,j]
                             fout.write('\t{} -> {}\t\t[penwidth={:.3f}]\n'.format(i, j, w))
@@ -773,9 +782,9 @@ def simulated_annealing_optimization(N, K, n_seeds, n_runs=1, r_direction='max')
                         nw_best['robustness'].append(NW.r)
 
                 if i > 0 and i % 2000 == 0:
-                    print('({}, {:.4f})'.format(i, NW.s), end=' ', flush=True)
-                    NW.save_network(path_run + 'G={:05d}-best_s.netw'.format(i))
-                    NW.save_edges(path_run + 'G={:05d}-best_s.edges'.format(i))
+                    print('({}, {:.4f}, {})'.format(i, NW.s, len(NW.edges)), end=' ', flush=True)
+                    NW.save_network(path_run + 'G={:05d}.netw'.format(i))
+                    NW.save_edges(path_run + 'G={:05d}.edges'.format(i))
                     draw_convergence(nw_all, nw_best, i, NW)
 
 
@@ -784,7 +793,7 @@ def simulated_annealing_optimization(N, K, n_seeds, n_runs=1, r_direction='max')
 
 def pareto_optimization(N, K, n_seeds, n_runs=1):
     G_max = 100001
-    r_threshold = 0.05
+    r_threshold = 0.01
 
     path = 'res-opt/pareto/N={}-K={}-s={}-rt={:.3f}/'.format(N, K, key_score, r_threshold)
 
@@ -950,10 +959,10 @@ def place_elem(pareto_best, min_s, max_r, min_r, pareto_hr, pareto_lr, nw_mut):
 
 if __name__ == "__main__":
     N = 10
-    K = 1
-    # pareto_optimization(N, K, n_seeds=100, n_runs=1)
+    K = 15
+    pareto_optimization(N, K, n_seeds=1, n_runs=1)
     # heuristic_annealing_optimization(N, K, 1, 1, 'min')
-    simulated_annealing_optimization(N, K, n_seeds=100, n_runs=1, r_direction='min')
+    # simulated_annealing_optimization(N, K, n_seeds=1, n_runs=1, r_direction='min')
 
 
     # P = 50
