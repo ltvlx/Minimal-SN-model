@@ -17,6 +17,7 @@ random.seed(0)
 # z_n -- default function
 key_score = ['z_n', 'z_a', 'm_n', 'm_a'][0]
 key_robust = ['make_0', 'proportional'][0]
+key_edgelim = ['none', 'hard', 'soft_c', 'soft_e'][3]
 
 min_w = 0.01
 
@@ -37,6 +38,7 @@ class TranspNetwork:
         """
         self.N = N
         self.D = D
+        self.M_max = 0.3 * N * (N - 1)
 
         if A is None:
             A = np.random.randint(0, 100, size=(N, N))
@@ -66,30 +68,29 @@ class TranspNetwork:
                 else:
                     self.edges.add((i,j))
 
-        # Restricting the number of edges
-        while len(self.edges) > self.N * 5:
-            i, j = random.sample(self.edges, 1)[0]
-            self.edges.remove((i, j))
-            self.A[i, j] = 0
-
+        if key_edgelim == 'hard':
+            while len(self.edges) > self.M_max:
+                _e = random.sample(self.edges, 1)[0]
+                self.edges.remove(_e)
+                self.A[i, j] = 0
 
         self.calculate_score(D)
         # self.calculate_robustness(D)
+
+        if key_edgelim == 'soft_c' and len(self.edges) > self.M_max:
+            self.s *= 2
+        elif key_edgelim == 'soft_e':
+            self.s *= 1.05 ** (max(len(self.edges) - self.M_max, 0))
+
 
 
     def calculate_score(self, D):
         if D is None:
             D = self.D
-
         self.s = 0.0
         for Dk in D:
             _, x = self.__get_score(Dk)
             self.s += x
-
-        # # Penalty function for too many edges
-        # if len(self.edges) > self.N * 2:
-        #     # self.s *= 1.05 ** (self.M - self.N * 2)
-        #     self.s *= 2
 
 
     def calculate_robustness(self, D=None):
@@ -262,7 +263,6 @@ class TranspNetwork:
                 v = self.A[i, j] * Dk[i]
                 Rk[i] -= v
                 Rk[j] += v
-        # return Rk, sum(np.abs(Rk))
         s_min = np.sqrt((np.mean(Dk) ** 2) * self.N)
         s = np.sqrt(sum(Rk**2))
         return Rk, s - s_min
@@ -795,7 +795,7 @@ def pareto_optimization(N, K, n_seeds, n_runs=1):
     G_max = 100001
     r_threshold = 0.01
 
-    path = 'res-opt/pareto/N={}-K={}-s={}-rt={:.3f}/'.format(N, K, key_score, r_threshold)
+    path = 'res-opt/pareto/N={}-K={}-s={}-rt={:.3f}-elim={}/'.format(N, K, key_score, r_threshold, key_edgelim)
 
     if not os.path.exists(path):
         os.makedirs(path)
@@ -883,6 +883,7 @@ def pareto_optimization(N, K, n_seeds, n_runs=1):
                     ax.set_ylabel('robustness')
                     ax.legend(loc='lower right')
                     ax.grid(alpha = 0.4, linestyle = '--', linewidth = 0.2, color = 'black')
+                    # plt.xlim((0.9*min_s, 2.5*min_s))
 
                     plt.savefig(path_run + 'opt_conv-G={}-{:.3f}.png'.format(i, r_threshold), bbox_inches = 'tight', pad_inches=0.1, dpi=400)
                     plt.close()
@@ -932,7 +933,11 @@ def place_elem(pareto_best, min_s, max_r, min_r, pareto_hr, pareto_lr, nw_mut):
 
     if nw_mut.s == min_s:
         # print("Case 1. Extend pareto_best")
-        pareto_best.append(nw_mut)
+        for nw in pareto_best:
+            if nw.r == nw_mut.r:
+                break
+        else:
+            pareto_best.append(nw_mut)
 
         if nw_mut.r > max_r:
             max_r = nw_mut.r
@@ -959,11 +964,17 @@ def place_elem(pareto_best, min_s, max_r, min_r, pareto_hr, pareto_lr, nw_mut):
 
 if __name__ == "__main__":
     N = 10
-    K = 15
+    K = 1
     pareto_optimization(N, K, n_seeds=1, n_runs=1)
     # heuristic_annealing_optimization(N, K, 1, 1, 'min')
     # simulated_annealing_optimization(N, K, n_seeds=1, n_runs=1, r_direction='min')
 
+    # np.random.seed(0)
+    # D = np.random.randint(-50, 50, size=(K, N))
+    # NW = TranspNetwork(N, D)
+    # NW.r_threshold = 0.01
+    # NW.calculate_robustness()
+    # print(NW)
 
     # P = 50
     # G_max = 601
