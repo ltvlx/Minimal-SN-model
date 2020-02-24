@@ -626,185 +626,189 @@ def simulated_annealing_optimization(N, K, n_seeds, n_runs, r_direction='max'):
 
 
 
+class Pareto:
+    def optimization(self, N, K, n_seeds, n_runs):
+        G_max = 100001
+        r_threshold = 0.01
 
+        path = 'res-opt/pareto/N={}-K={}-s={}-rt={:.4f}-elim={}/'.format(N, K, key_score, r_threshold, key_edgelim)
 
-def pareto_optimization(N, K, n_seeds, n_runs=1):
-    G_max = 100001
-    r_threshold = 0.01
+        if not os.path.exists(path):
+            os.makedirs(path)
+        print('Pareto optimization\n{}'.format(path))
 
-    path = 'res-opt/pareto/N={}-K={}-s={}-rt={:.4f}-elim={}/'.format(N, K, key_score, r_threshold, key_edgelim)
-
-    if not os.path.exists(path):
-        os.makedirs(path)
-    print('Pareto optimization\n{}'.format(path))
-
-    for i_seed in range(n_seeds):
-        print('\nNew demand seed;', i_seed)
-        np.random.seed(i_seed)
-        D = np.random.randint(-50, 50, size=(K, N))
-					
-        for i_run in range(n_runs):
-            if n_runs > 1:
-                print('\n   new run;', i_run)
-                path_run = path + 'seed={:02d}-run={:02d}/'.format(i_seed, i_run)
-            else:
-                path_run = path + 'seed={:02d}/'.format(i_seed)
-
-            if not os.path.exists(path_run):
-                os.makedirs(path_run)
-            NW = TranspNetwork(N, D)
-            NW.r_threshold = r_threshold
-            NW.calculate_robustness()
-
-            nw_all = {'score': [NW.s], 'robustness': [NW.r]}
-            pareto_best = [NW]
-            pareto_hr = []
-            pareto_lr = []
-            min_s = NW.s
-            max_r = NW.r
-            min_r = NW.r
-
-
-            for i in range(G_max):
-                pareto_ranged = [[] for _ in range(10)]
-                for _nw in pareto_best + pareto_hr + pareto_lr:
-                    j = int(_nw.r*10) if _nw.r < 1.0 else 9
-                    pareto_ranged[j].append(_nw)
-                non_zero_ranges = [j for j in range(10) if len(pareto_ranged[j]) > 0]
-
-                r_idx = np.random.choice(non_zero_ranges)
-                nw_mut = np.random.choice(pareto_ranged[r_idx]).copy()
-
-                nw_mut.mutate()
-                nw_mut.calculate_robustness()
-                nw_all['score'].append(nw_mut.s)
-                nw_all['robustness'].append(nw_mut.r)
-
-                if nw_mut.s < min_s:
-                    # print("Case 0. Replace pareto_best")
-                    min_s = nw_mut.s
-                    max_r = nw_mut.r
-                    min_r = nw_mut.r
-                    
-                    elems_to_place = pareto_best + pareto_hr + pareto_lr
-                    elems_to_place.sort(key = lambda x: x.s)
-                    pareto_best = [nw_mut]
-                    pareto_hr = []
-                    pareto_lr = []
-
+        for i_seed in range(n_seeds):
+            print('\nNew demand seed;', i_seed)
+            np.random.seed(i_seed)
+            D = np.random.randint(-50, 50, size=(K, N))
+                        
+            for i_run in range(n_runs):
+                if n_runs > 1:
+                    print('\n   new run;', i_run)
+                    self.path_run = path + 'seed={:02d}-run={:02d}/'.format(i_seed, i_run)
                 else:
-                    elems_to_place = [nw_mut]
+                    self.path_run = path + 'seed={:02d}/'.format(i_seed)
+                if not os.path.exists(self.path_run):
+                    os.makedirs(self.path_run)
 
-                for _nw in elems_to_place:
-                    pareto_best, max_r, min_r, pareto_hr, pareto_lr = place_elem(pareto_best, min_s, max_r, min_r, pareto_hr, pareto_lr, _nw)
+                NW = TranspNetwork(N, D)
+                NW.r_threshold = r_threshold
+                NW.calculate_robustness()
 
-
-                if i > 0 and i % 10000 == 0:
-                    print('({}, {:.3f}, {:.4f}, {:.4f})'.format(i, min_s, max_r, min_r), end=' ', flush=True)
-                    print()
-
-                    _, ax = plt.subplots(figsize=(8,6))
-                    plt.scatter(nw_all['score'], nw_all['robustness'], s=2, edgecolors='C0', alpha=0.4, label='all')
-                    
-                    pareto_best.sort(key = lambda x: x.r)
-                    plt.plot([x.s for x in pareto_best], [x.r for x in pareto_best], 'o-', ms=4, color='C3', alpha=0.7, label='pareto best')
-
-                    pareto_hr.sort(key = lambda x: x.r)
-                    plt.plot([x.s for x in pareto_hr], [x.r for x in pareto_hr], 'o-', ms=4, color='C1', alpha=0.7, label='pareto HR')
-
-                    pareto_lr.sort(key = lambda x: x.r)
-                    plt.plot([x.s for x in pareto_lr], [x.r for x in pareto_lr], 'o-', ms=4, color='C2', alpha=0.7, label='pareto LR')
-
-                    plt.title('Pareto optimization N={}, K={}, rt={:.4f}\nG={:05d}'.format(N, K, r_threshold, i))
-                    ax.set_xlabel('score')
-                    ax.set_ylabel('robustness')
-                    ax.legend(loc='best')
-                    ax.grid(alpha = 0.4, linestyle = '--', linewidth = 0.2, color = 'black')
-                    max_s = max(pareto_best + pareto_hr + pareto_lr, key = lambda x: x.s).s
-                    ds = (max_s - min_s)
-                    plt.xlim((min_s - 0.05*ds, max_s + 0.05*ds))
-
-                    plt.savefig(path_run + 'opt_conv-G={}.png'.format(i), bbox_inches = 'tight', pad_inches=0.1, dpi=400)
-                    plt.close()
-
-                if i > 0 and i % 20000 == 0:
-                    j = 0
-                    for _nw in sorted(pareto_lr + pareto_best + pareto_hr, key=lambda x: x.r):
-                        save_path = path_run + 'G_{:05d}/'.format(i)
-                        if not os.path.exists(save_path):
-                            os.makedirs(save_path)
-
-                        _nw.save_network(save_path + 'i={:04d}.netw'.format(j))
-                        _nw.save_edges(save_path + 'i={:04d}.edges'.format(j))
-                        j += 1
+                self.nw_all = {'score': [NW.s], 'robustness': [NW.r]}
+                self.pareto_best = [NW]
+                self.pareto_hr = []
+                self.pareto_lr = []
+                self.min_s = NW.s
+                self.max_r = NW.r
+                self.min_r = NW.r
 
 
-def add_to_HR(pareto_hr, nw_mut):
-    for _nw in pareto_hr:
-        if nw_mut.s >= _nw.s and nw_mut.r <= _nw.r:
-        # if _nw.s >= nw_mut.s and _nw.r <= nw_mut.r:
-            break
-    else:
-        pareto_hr = [_nw for _nw in pareto_hr if (_nw.r > nw_mut.r or _nw.s < nw_mut.s)]
-        pareto_hr.append(nw_mut)    
+                for i in range(G_max):
+                    nw_mut = self.__get_random_nw()
+                    nw_mut.mutate()
+                    nw_mut.calculate_robustness()
+                    self.nw_all['score'].append(nw_mut.s)
+                    self.nw_all['robustness'].append(nw_mut.r)
 
-    return pareto_hr
+                    if nw_mut.s < self.min_s:
+                        # print("Case 0. Replace pareto_best")
+                        self.min_s = nw_mut.s
+                        self.max_r = nw_mut.r
+                        self.min_r = nw_mut.r
+                        
+                        elems_to_place = self.pareto_best + self.pareto_hr + self.pareto_lr
+                        elems_to_place.sort(key = lambda x: x.s)
+                        self.pareto_best = [nw_mut]
+                        self.pareto_hr = []
+                        self.pareto_lr = []
 
+                    else:
+                        elems_to_place = [nw_mut]
 
-
-def add_to_LR(pareto_lr, nw_mut):
-    # print('LR: ({:.2f}, {:.4f}) to {}'.format(nw_mut.s, nw_mut.r, pareto_lr))
-
-    for _nw in pareto_lr:
-        if nw_mut.s >= _nw.s and nw_mut.r >= _nw.r:
-            # print('Don`t add.')
-            break
-    else:
-        # print('Add and replace some')
-        pareto_lr = [_nw for _nw in pareto_lr if (_nw.r < nw_mut.r or _nw.s < nw_mut.s)]
-        pareto_lr.append(nw_mut)
-
-    return pareto_lr
+                    for _nw in elems_to_place:
+                        self.__place_elem(_nw)
 
 
-def place_elem(pareto_best, min_s, max_r, min_r, pareto_hr, pareto_lr, nw_mut):
-    assert(nw_mut.s >= min_s)
+                    if i > 0 and i % 10000 == 0:
+                        print(f'({i}, {self.min_s:.3f}, {self.max_r:.4f}, {self.min_r:.4f})', end=' ', flush=True)
+                        print()
+                        self.__plot_convergence(N, K, r_threshold, i)
 
-    if nw_mut.s == min_s:
-        # print("Case 1. Extend pareto_best")
-        for nw in pareto_best:
-            if nw.r == nw_mut.r:
+
+                    if i > 0 and i % 20000 == 0:
+                        self.__save_optimal(i)
+
+
+    def __get_random_nw(self):
+        pareto_ranged = [[] for _ in range(10)]
+        for _nw in self.pareto_best + self.pareto_hr + self.pareto_lr:
+            j = int(_nw.r*10) if _nw.r < 1.0 else 9
+            pareto_ranged[j].append(_nw)
+        non_zero_ranges = [j for j in range(10) if len(pareto_ranged[j]) > 0]
+
+        r_idx = np.random.choice(non_zero_ranges)
+        return np.random.choice(pareto_ranged[r_idx]).copy()
+
+
+    def __place_elem(self, nw_mut):
+        assert(nw_mut.s >= self.min_s)
+
+        if nw_mut.s == self.min_s:
+            # print("Case 1. Extend pareto_best")
+            for nw in self.pareto_best:
+                if nw.r == nw_mut.r:
+                    break
+            else:
+                self.pareto_best.append(nw_mut)
+
+            if nw_mut.r > self.max_r:
+                self.max_r = nw_mut.r
+                # remove such networks from [high robustness pareto] that have robustness lower than (nw_mut.r)
+                self.pareto_hr = [_nw for _nw in self.pareto_hr if _nw.r > self.max_r]
+            elif nw_mut.r < self.min_r:
+                self.min_r = nw_mut.r
+                # remove such networks from [low robustness pareto] that have robustness higher than (nw_mut.r)
+                self.pareto_lr = [_nw for _nw in self.pareto_lr if _nw.r < self.min_r]
+
+        elif nw_mut.r > self.max_r:
+            # print("Case 2. Update pareto_HR")
+            # Check if the mutated network will fit to the existing pareto HR
+            self.__add_to_HR(nw_mut)
+
+        elif nw_mut.r < self.min_r:
+            # print("Case 3. Update pareto_LR")
+            # Check if the mutated network will fit to the existing pareto LR
+            self.__add_to_LR(nw_mut)
+
+
+    def __add_to_HR(self, nw_mut):
+        for _nw in self.pareto_hr:
+            if nw_mut.s >= _nw.s and nw_mut.r <= _nw.r:
+            # if _nw.s >= nw_mut.s and _nw.r <= nw_mut.r:
                 break
         else:
-            pareto_best.append(nw_mut)
+            self.pareto_hr = [_nw for _nw in self.pareto_hr if (_nw.r > nw_mut.r or _nw.s < nw_mut.s)]
+            self.pareto_hr.append(nw_mut)    
 
-        if nw_mut.r > max_r:
-            max_r = nw_mut.r
-            # remove such networks from [high robustness pareto] that have robustness lower than (nw_mut.r)
-            pareto_hr = [_nw for _nw in pareto_hr if _nw.r > max_r]
-        elif nw_mut.r < min_r:
-            min_r = nw_mut.r
-            # remove such networks from [low robustness pareto] that have robustness higher than (nw_mut.r)
-            pareto_lr = [_nw for _nw in pareto_lr if _nw.r < min_r]
 
-    elif nw_mut.r > max_r:
-        # print("Case 2. Update pareto_HR")
-        # Check if the mutated network will fit to the existing pareto HR
-        pareto_hr = add_to_HR(pareto_hr, nw_mut)
+    def __add_to_LR(self, nw_mut):
+        # print('LR: ({:.2f}, {:.4f}) to {}'.format(nw_mut.s, nw_mut.r, pareto_lr))
 
-    elif nw_mut.r < min_r:
-        # print("Case 3. Update pareto_LR")
-        # Check if the mutated network will fit to the existing pareto LR
-        pareto_lr = add_to_LR(pareto_lr, nw_mut)
+        for _nw in self.pareto_lr:
+            if nw_mut.s >= _nw.s and nw_mut.r >= _nw.r:
+                # print('Don`t add.')
+                break
+        else:
+            # print('Add and replace some')
+            self.pareto_lr = [_nw for _nw in self.pareto_lr if (_nw.r < nw_mut.r or _nw.s < nw_mut.s)]
+            self.pareto_lr.append(nw_mut)
 
-    return pareto_best, max_r, min_r, pareto_hr, pareto_lr
+
+    def __plot_convergence(self, N, K, r_threshold, i):
+        _, ax = plt.subplots(figsize=(8,6))
+        plt.scatter(self.nw_all['score'], self.nw_all['robustness'], s=2, edgecolors='C0', alpha=0.4, label='all')
+        
+        self.pareto_best.sort(key = lambda x: x.r)
+        plt.plot([x.s for x in self.pareto_best], [x.r for x in self.pareto_best], 'o-', ms=4, color='C3', alpha=0.7, label='pareto best')
+
+        self.pareto_hr.sort(key = lambda x: x.r)
+        plt.plot([x.s for x in self.pareto_hr], [x.r for x in self.pareto_hr], 'o-', ms=4, color='C1', alpha=0.7, label='pareto HR')
+
+        self.pareto_lr.sort(key = lambda x: x.r)
+        plt.plot([x.s for x in self.pareto_lr], [x.r for x in self.pareto_lr], 'o-', ms=4, color='C2', alpha=0.7, label='pareto LR')
+
+        plt.title(f'Pareto optimization N={N}, K={K}, rt={r_threshold:.4f}\nG={i:05d}')
+        ax.set_xlabel('score')
+        ax.set_ylabel('robustness')
+        ax.legend(loc='best')
+        ax.grid(alpha = 0.4, linestyle = '--', linewidth = 0.2, color = 'black')
+        max_s = max(self.pareto_best + self.pareto_hr + self.pareto_lr, key = lambda x: x.s).s
+        ds = (max_s - self.min_s)
+        plt.xlim((self.min_s - 0.05*ds, max_s + 0.05*ds))
+
+        plt.savefig(self.path_run + f'opt_conv-G={i:6d}.png', bbox_inches = 'tight', pad_inches=0.1, dpi=400)
+        plt.close()
+
+
+    def __save_optimal(self, i):
+        j = 0
+        for _nw in sorted(self.pareto_lr + self.pareto_best + self.pareto_hr, key=lambda x: x.r):
+            save_path = self.path_run + 'G_{:05d}/'.format(i)
+            if not os.path.exists(save_path):
+                os.makedirs(save_path)
+
+            _nw.save_network(save_path + 'i={:04d}.netw'.format(j))
+            _nw.save_edges(save_path + 'i={:04d}.edges'.format(j))
+            j += 1
+
 
 
 
 if __name__ == "__main__":
-    N = 10
+    N = 5
     K = 1
-    pareto_optimization(N, K, n_seeds=1, n_runs=1)
+    Pareto().optimization(N, K, n_seeds=1, n_runs=1)
     # heuristic_annealing_optimization(N, K, 1, 1, 'min')
     # simulated_annealing_optimization(N, K, n_seeds=1, n_runs=1, r_direction='min')
 
