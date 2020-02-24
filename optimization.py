@@ -27,7 +27,7 @@ class TranspNetwork:
     r = None
     A = None
     D = None
-    r_threshold = 0.007
+    r_threshold = 0.1
 
     edges = set()
 
@@ -61,8 +61,8 @@ class TranspNetwork:
         assert(np.all(np.sum(self.A, axis=1) < 1.01))
 
         self.edges = set()
-        for i in range(N):
-            for j in range(N):
+        for i in range(self.N):
+            for j in range(self.N):
                 if self.A[i, j] < min_w:
                     self.A[i, j] = 0
                 else:
@@ -97,10 +97,8 @@ class TranspNetwork:
         if D is None:
             D = self.D
 
-        n_lin = 0
         n_rob = 0
         for i, j in self.edges:
-            n_lin += 1
             row = np.array(self.A[i])
             s_init = self.s
 
@@ -117,7 +115,7 @@ class TranspNetwork:
             if rate <= self.r_threshold:
                 n_rob += 1
 
-        self.r = n_rob / n_lin
+        self.r = n_rob / len(self.edges)
 
 
     def calculate_NPR_robustness(self, D=None):
@@ -192,7 +190,7 @@ class TranspNetwork:
         elif mut_type == 'make_0':
             idx = np.where(self.A[i] > 0)[0]
             if len(idx) <= 1:
-                print('mutation {} at row {} failed. Not enough non-zero values.'.format(mut_type, i))
+                print(f'mutation {mut_type} at row {i} failed. Not enough non-zero values.')
             else:
                 j = np.random.choice(idx)
                 self.A[i,j] = 0
@@ -321,32 +319,32 @@ class TranspNetwork:
 
 
     def __str__(self):
-        return "\nA:\n{}\nscore = {:.2f}, robustness = {}".format(self.A, self.s, self.r)
+        return f"\nA:\n{self.A}\nscore = {self.s:.2f}, robustness = {self.r}"
 
 
     def __repr__(self):
         # return "{:.1f}".format(self.s)
-        return "({:.1f}, {:.3f})".format(self.s, self.r)
+        return f"({self.s:.1f}, {self.r:.3f})"
 
 
     def save_edges(self, fpath='network.edges'):
         with codecs.open(fpath, 'w') as fout:
             for i, j in self.edges:
-                fout.write('{}\t{}\t1\n'.format(i+1, j+1))
+                fout.write(f'{i+1}\t{j+1}\t1\n')
 
 
     def save_network(self, fpath='network.netw'):
-        rob = '' if self.r is None else ', robustness={:.5f}, rob_setup={}'.format(self.r, key_robust)
-        header = '# score={:.4f}, opt_setup={}{}\n'.format(self.s, key_score, rob)
+        rob = '' if self.r is None else f', robustness={self.r:.5f}, rob_setup={key_robust}'
+        header = f'# score={self.s:.4f}, opt_setup={key_score}{rob}\n'
 
         with codecs.open(fpath, 'w') as fout:
             fout.write(header)
-            fout.write('# adjacency matrix A, M={}, N={}\n'.format(len(self.edges), self.N))
+            fout.write(f'# adjacency matrix A, M={len(self.edges)}, N={self.N}\n')
             for row in self.A:
                 line = ' '.join(['%8.6f'%x for x in row])
                 fout.write(line + '\n')
 
-            fout.write('# demand pattern D, K={}\n'.format(np.shape(self.D)[0]))
+            fout.write(f'# demand pattern D, K={np.shape(self.D)[0]}\n')
             for row in self.D:
                 line = ' '.join(['%8.4f'%x for x in row])
                 fout.write(line + '\n')
@@ -361,7 +359,7 @@ class TranspNetwork:
             Rk, x = self.__get_score(Dk)
 
             _, ax = plt.subplots(figsize=(8, 6))
-            ax.set_title('k={}, score={:.2f}, mean={:.2f}'.format(k, x, np.mean(Dk)))
+            ax.set_title(f'k={k}, score={x:.2f}, mean={np.mean(Dk):.2f}')
             ax.bar([i for i in range(self.N)], Dk, color='#fff2c9', lw=1.0, ec='#e89c0e', hatch="...", zorder=0)
             ax.bar([i for i in range(self.N)], Rk, color='#c9dbff', lw=1.0, ec='#4b61a6', hatch="//", zorder=1)
 
@@ -370,7 +368,7 @@ class TranspNetwork:
             ax.grid(alpha = 0.4, linestyle = '--', linewidth = 0.2, color = 'black', zorder=0)
 
             # plt.show()
-            plt.savefig(path + "d={}.png".format(k), dpi=400, bbox_inches = 'tight')
+            plt.savefig(path + f"d={k:02d}.png", dpi=400, bbox_inches = 'tight')
             plt.close()
 
 
@@ -386,10 +384,10 @@ class TranspNetwork:
             fout.write('\tgraph [splines="spline"];\n')
             fout.write('\tnode [fixedsize=true, fontname=helvetica, fontsize=10, label="\\N", shape=circle, style=solid];\n')
             for i in range(self.N):
-                fout.write('\t{0}\t\t[label="{0}"; width=1.0]\n'.format(i))
+                fout.write(f'\t{i}\t\t[label="{i}"; width=1.0]\n')
             for i, j in self.edges:
                 w = 0.4 + 2.0 * self.A[i,j]
-                fout.write('\t{} -> {}\t\t[penwidth={:.3f}]\n'.format(i, j, w))
+                fout.write(f'\t{i} -> {j}\t\t[penwidth={w:.3f}]\n')
             fout.write('}')
         arguments = [graphviz_path, '-Tpng', '%s.dot'%(path + fname), '-o', '%s.png'%(path + fname)]
         run(args=arguments)
@@ -398,7 +396,7 @@ class TranspNetwork:
             return
          
         for k in range(np.shape(self.D)[0]):
-            fname = 'nw-{:02d}'.format(k)
+            fname = f'nw-{k:02d}'
             with codecs.open(path + '%s.dot'%fname, "w") as fout:
                 fout.write('strict digraph {\n')
                 fout.write('\tgraph [splines="spline"];\n')
@@ -409,12 +407,12 @@ class TranspNetwork:
                     if self.D[k, i] >= 0:
                         active.append(i)
                         color = '#b2df8a'
-                    fout.write('\t{0}\t\t[label="{0}"; width=1.0; "style"= "filled"; "fillcolor"="{1}"]\n'.format(i, color))
+                    fout.write(f'\t{i}\t\t[label="{i}"; width=1.0; "style"= "filled"; "fillcolor"="{color}"]\n')
                 for i, j in self.edges:
                     if i in active:
                         if self.D[k, j] < 0 or key_score in ['z_a', 'm_a']:
                             w = 0.4 + 2.0 * self.A[i,j]
-                            fout.write('\t{} -> {}\t\t[penwidth={:.3f}]\n'.format(i, j, w))
+                            fout.write(f'\t{i} -> {j}\t\t[penwidth={w:.3f}]\n')
 
                 fout.write('}')
             arguments = [graphviz_path, '-Tpng', '%s.dot'%(path + fname), '-o', '%s.png'%(path + fname)]
@@ -683,7 +681,7 @@ def heuristic_annealing_optimization(N, K, n_seeds, n_runs=1, r_direction='max')
 
 
 
-def simulated_annealing_optimization(N, K, n_seeds, n_runs=1, r_direction='max'):
+def simulated_annealing_optimization(N, K, n_seeds, n_runs, r_direction='max'):
     G = 20001
     r_threshold = 0.01
     sigma = 0.05
@@ -795,7 +793,7 @@ def pareto_optimization(N, K, n_seeds, n_runs=1):
     G_max = 100001
     r_threshold = 0.01
 
-    path = 'res-opt/pareto/N={}-K={}-s={}-rt={:.3f}-elim={}/'.format(N, K, key_score, r_threshold, key_edgelim)
+    path = 'res-opt/pareto/N={}-K={}-s={}-rt={:.4f}-elim={}/'.format(N, K, key_score, r_threshold, key_edgelim)
 
     if not os.path.exists(path):
         os.makedirs(path)
@@ -859,7 +857,7 @@ def pareto_optimization(N, K, n_seeds, n_runs=1):
                     elems_to_place = [nw_mut]
 
                 for _nw in elems_to_place:
-                    pareto_best, max_r, min_r, pareto_hr, pareto_lr, nw_mut = place_elem(pareto_best, min_s, max_r, min_r, pareto_hr, pareto_lr, _nw)
+                    pareto_best, max_r, min_r, pareto_hr, pareto_lr = place_elem(pareto_best, min_s, max_r, min_r, pareto_hr, pareto_lr, _nw)
 
 
                 if i > 0 and i % 10000 == 0:
@@ -878,14 +876,16 @@ def pareto_optimization(N, K, n_seeds, n_runs=1):
                     pareto_lr.sort(key = lambda x: x.r)
                     plt.plot([x.s for x in pareto_lr], [x.r for x in pareto_lr], 'o-', ms=4, color='C2', alpha=0.7, label='pareto LR')
 
-                    plt.title('Pareto optimization N={}, K={}, rt={:.3f}\nG={:05d}'.format(N, K, r_threshold, i))
+                    plt.title('Pareto optimization N={}, K={}, rt={:.4f}\nG={:05d}'.format(N, K, r_threshold, i))
                     ax.set_xlabel('score')
                     ax.set_ylabel('robustness')
-                    ax.legend(loc='lower right')
+                    ax.legend(loc='best')
                     ax.grid(alpha = 0.4, linestyle = '--', linewidth = 0.2, color = 'black')
-                    # plt.xlim((0.9*min_s, 2.5*min_s))
+                    max_s = max(pareto_best + pareto_hr + pareto_lr, key = lambda x: x.s).s
+                    ds = (max_s - min_s)
+                    plt.xlim((min_s - 0.05*ds, max_s + 0.05*ds))
 
-                    plt.savefig(path_run + 'opt_conv-G={}-{:.3f}.png'.format(i, r_threshold), bbox_inches = 'tight', pad_inches=0.1, dpi=400)
+                    plt.savefig(path_run + 'opt_conv-G={}.png'.format(i), bbox_inches = 'tight', pad_inches=0.1, dpi=400)
                     plt.close()
 
                 if i > 0 and i % 20000 == 0:
@@ -958,7 +958,7 @@ def place_elem(pareto_best, min_s, max_r, min_r, pareto_hr, pareto_lr, nw_mut):
         # Check if the mutated network will fit to the existing pareto LR
         pareto_lr = add_to_LR(pareto_lr, nw_mut)
 
-    return pareto_best, max_r, min_r, pareto_hr, pareto_lr, nw_mut
+    return pareto_best, max_r, min_r, pareto_hr, pareto_lr
 
 
 
