@@ -18,8 +18,8 @@ random.seed(0)
 key_score = ['z_n', 'z_a', 'm_n', 'm_a'][0]
 key_robust = ['make_0', 'proportional'][0]
 key_edgelim = ['none', 'hard', 'soft_c', 'soft_e'][3]
-
 min_w = 0.01
+
 
 class TranspNetwork:
     N = 0
@@ -420,167 +420,6 @@ class TranspNetwork:
 
 
 
-
-class Optimization_Problem_Wrapper:
-    def __init__(self, N, K, D, P):
-        gen_prop = {
-            'Parents': 0.2,
-            'Recombined': 0.3,
-            'Mutated': 0.4,
-            'Random': 0.1}
-        assert(abs(sum(gen_prop.values()) - 1) < 0.001)
-
-        self.N = N
-        self.K = K
-        self.D = D
-        self.P = P
-        self.G = 0
-        
-        self.m = {key: int(val * P) for key, val in gen_prop.items()}
-        self.m['Mutated'] += P - sum(self.m.values()) # To make generation size == P
-
-        # print("Creating 0 generation as random networks.")
-        self.population = [TranspNetwork(N,D) for _ in range(P)]
-        self.population.sort(key = lambda x: x.s, reverse=False)
-        # print(self.population)
-
-        self.path = 'res-opt/N={}-K={}-{}/'.format(self.N, self.K, key_score)
-        if not os.path.exists(self.path):
-            os.makedirs(self.path)
-        print(self.path)
-        
-
-    
-    def optimize(self, G_max):
-        self.scores_history = {0: [nw.s for nw in self.population]}
-        # self.robust_history = {0: [nw.r for nw in self.population]}
-        self.robust_history = {}
-
-        for _g in range(1, G_max):
-            mating_pool = self.population[:self.m['Parents']]
-
-            next_gen = []
-            for _ in range(self.m['Recombined']):
-                x = np.random.choice(mating_pool)
-                next_gen.append(x.recombine(TranspNetwork(self.N, self.D)))
-
-            for _ in range(self.m['Mutated']):
-                x = np.random.choice(mating_pool).copy()
-                x.mutate()
-                next_gen.append(x)
-
-            for _ in range(self.m['Random']):
-                x = TranspNetwork(self.N, self.D)
-                next_gen.append(x)
-
-            next_gen += mating_pool
-            next_gen.sort(key = lambda x: x.s, reverse=False)
-
-            self.population = []
-            for x in next_gen:
-                for y in self.population:
-                    if x == y:
-                        break
-                else:
-                    self.population.append(x)
-
-            # Adding random solutions to fill the population
-            if len(self.population) < self.P:
-                for _ in range(self.P - len(self.population)):
-                    x = TranspNetwork(self.N, self.D)
-                    self.population.append(x)
-            self.population.sort(key = lambda x: x.s, reverse=False)
-
-            self.scores_history[_g] = [nw.s for nw in self.population]
-            # self.robust_history[_g] = [nw.r for nw in self.population]
-            self.G = _g
-
-            if _g % 100 == 0:
-                print('({}, {:.3f})'.format(_g, self.population[0].s), end=' ', flush=True)
-
-                # if _g > 200 and (self.scores_history[_g - 200][0] - self.scores_history[_g][0] < 0.01):
-                #     print("\tconverged at G={}.".format(_g))
-                #     return
-        print()
-
-
-    def plot_convergence(self, postfix=''):
-        x = []
-        y = []
-        for _g, scores in self.scores_history.items():
-            x.append(_g)
-            y.append(scores[0])
-
-        _, ax = plt.subplots(figsize=(6,4))
-
-        plt.plot(x, y, '-')
-
-        plt.title('N={}, K={}, P={}'.format(self.N, self.K, self.P))
-        ax.set_ylabel('best score')
-        ax.set_xlabel('generation')        
-
-        ax.grid(alpha = 0.4, linestyle = '--', linewidth = 0.2, color = 'black')
-
-        plt.savefig(self.path + 'convergence-P={}-G={}{}.png'.format(self.P, self.G, postfix), bbox_inches = 'tight', pad_inches=0.1, dpi=400)
-        # plt.show()
-        plt.close()
-
-
-    def plot_robustness(self, postfix=''):
-        x = []
-        y = []
-        for _g, val in self.robust_history.items():
-            x.append(_g)
-            y.append(val[0])
-
-        _, ax = plt.subplots(figsize=(6,4))
-
-        plt.plot(x, y, '-')
-
-        plt.title('N={}, K={}, P={}'.format(self.N, self.K, self.P))
-        ax.set_ylabel('robustness of the best')
-        ax.set_xlabel('generation')        
-
-        ax.grid(alpha = 0.4, linestyle = '--', linewidth = 0.2, color = 'black')
-
-        plt.savefig(self.path + 'robustness-P={}-G={}{}.png'.format(self.P, self.G, postfix), bbox_inches = 'tight', pad_inches=0.1, dpi=400)
-        # plt.show()
-        plt.close()
-
-
-    def plot_demand(self):
-        plt.figure(figsize=(4,4))
-        for i in range(self.N):
-            plt.plot(self.D[i], label=str(i))
-        plt.grid(alpha = 0.4, linestyle = '--', linewidth = 0.2, color = 'black')
-        plt.legend()
-        plt.xlabel('pattern, k')
-        plt.ylabel('demand')
-
-        plt.savefig(self.path + 'demand.png', bbox_inches = 'tight', pad_inches=0.1, dpi=400)
-        # plt.show()
-        plt.close()
-
-
-    def draw_network_graphviz(self, idx=0, draw_all=False, postfix=''):
-       self.population[idx].draw_network_graphviz(self.path + 'netw-G={:05d}-i={:03d}{}/'.format(self.G, idx, postfix), draw_all)
-
-
-    def draw_inventories(self, idx=0, postfix=''):
-       self.population[idx].draw_inventories(self.path + 'inv-G={:05d}-i={:03d}{}/'.format(self.G, idx, postfix))
-
-
-    def save_optimal_network(self, idx=0, postfix=''):
-        fname = 'G={:05d}-i={:03d}{}.netw'.format(self.G, idx, postfix)
-        self.population[idx].save_network(self.path + fname)
-
-
-    def save_optimal_edges(self, idx=0, postfix=''):
-        fname = 'G={:05d}-i={:03d}{}.edges'.format(self.G, idx, postfix)
-        self.population[idx].save_edges(self.path + fname)
-
-
-
 def heuristic_annealing_optimization(N, K, n_seeds, n_runs=1, r_direction='max'):
     def better_r(nw_a, nw_b):
         if r_direction == 'max':
@@ -969,32 +808,14 @@ if __name__ == "__main__":
     # heuristic_annealing_optimization(N, K, 1, 1, 'min')
     # simulated_annealing_optimization(N, K, n_seeds=1, n_runs=1, r_direction='min')
 
+
+    # # Tests with a single Transportation Network
     # np.random.seed(0)
     # D = np.random.randint(-50, 50, size=(K, N))
     # NW = TranspNetwork(N, D)
     # NW.r_threshold = 0.01
     # NW.calculate_robustness()
     # print(NW)
-
-    # P = 50
-    # G_max = 601
-    # for rd in range(1):
-    #     print('New demand;', rd)
-    #     D = np.random.randint(-50, 50, size=(K, N))
-    #     xxx = Optimization_Problem_Wrapper(N, K, D, P)
-    #     xxx.optimize(G_max)
-
-    #     print(xxx.population[0])
-    #     print('Rob = ', xxx.population[0].r)
-
-    #     xxx.save_optimal_network(0, '-rd={:02d}'.format(rd))
-    #     xxx.save_optimal_edges(0, '-rd={:02d}'.format(rd))
-    #     xxx.draw_inventories(0, '-rd={:02d}'.format(rd))
-    #     xxx.draw_network_graphviz(draw_all=True, postfix='-rd={:02d}'.format(rd))
-
-    #     xxx.plot_convergence('-rd={:02d}'.format(rd))
-    #     # xxx.plot_robustness('-rd={:02d}'.format(rd))
-    #     # xxx.plot_demand()
 
 
 
