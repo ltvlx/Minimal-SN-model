@@ -12,17 +12,20 @@ np.set_printoptions(precision=4, suppress=True)
 np.random.seed(0)
 random.seed(0)
 
-# key for the function that calculates the score of a network.
+# key for the function that calculates the score of a network
+
 # z/m -- distance to zero/mean; n/a -- distribution from positive to negative/all demand
-# z_n -- default function
-key_score = ['z_n', 'z_a', 'm_n', 'm_a'][0]
-key_robust = ['make_0', 'proportional'][0]
-key_edgelim = ['none', 'hard', 'soft_c', 'soft_e'][3]
+key_distalg = ['p2n', 'p2a'][0]
+key_robust = ['r0', 'rp'][0]
+key_edgelim = ['none', 'hard', 'soft_c', 'soft_e'][0]
+key_score = ['s0', 'sm'][0]     # score is calculated as: quadratic difference from zero / from mean
+key_snrom = ['sq', 'DN'][1]   # score is normalized via: square root / division by N
 min_w = 0.01
 
 
 class TranspNetwork:
     N = 0
+    K = 0
     s = None
     r = None
     A = None
@@ -38,6 +41,7 @@ class TranspNetwork:
         """
         self.N = N
         self.D = D
+        self.K = D.shape[0]
         self.M_max = 0.3 * N * (N - 1)
 
         if A is None:
@@ -83,14 +87,46 @@ class TranspNetwork:
             self.s *= 1.05 ** (max(len(self.edges) - self.M_max, 0))
 
 
-
     def calculate_score(self, D):
         if D is None:
             D = self.D
+        
+        self.calc_redistributed_demand(D)
+                
         self.s = 0.0
-        for Dk in D:
-            _, x = self.__get_score(Dk)
-            self.s += x
+        for _k in range(self.K):
+            if key_score == 's0':
+                _s = sum(self.R[_k]**2)
+                # self.s += np.sqrt(sum(self.R[_k]**2))
+            elif key_score == 'sm':
+                m = np.mean(self.D[_k])
+                _s = sum((self.R[_k] - m)**2)
+
+            if key_snrom == 'sq':
+                _s = np.sqrt(_s)
+            elif key_snrom == 'DN':
+                _s = _s / self.N
+
+            self.s += _s
+
+
+    def calc_redistributed_demand(self, D):
+        self.R = np.array(self.D, dtype=float)
+
+        for _k in range(self.K):
+            Dk = D[_k]
+            senders = np.where(Dk > 0)[0]
+
+            if key_distalg == 'p2n':
+                receivers = np.where(Dk < 0)[0]
+            elif key_distalg == 'p2a':
+                receivers = list(range(self.N))
+
+            for i in senders:
+                for j in receivers:
+                    v = self.A[i, j] * Dk[i]
+                    self.R[_k, i] -= v
+                    self.R[_k, j] += v
 
 
     def calculate_robustness(self, D=None):
@@ -103,7 +139,7 @@ class TranspNetwork:
             s_init = self.s
 
             self.A[i, j] = 0
-            if key_robust == 'proportional' and np.sum(self.A[i]) > 0:
+            if key_robust == 'rp' and np.sum(self.A[i]) > 0:
                 self.A[i] = self.A[i] / np.sum(self.A[i])
             self.calculate_score(D)
             s_rob = self.s
@@ -135,7 +171,7 @@ class TranspNetwork:
         for i, j in self.edges:
             a_ij = self.A[i, j]
             self.A[i, j] = 0
-            if key_robust == 'proportional' and np.sum(self.A[i]) > 0:
+            if key_robust == 'rp' and np.sum(self.A[i]) > 0:
                 self.A[i] = self.A[i] / np.sum(self.A[i])
             self.calculate_score(D)
 
@@ -241,83 +277,6 @@ class TranspNetwork:
         return not self.__eq__(other)
 
 
-    def __get_score(self, Dk):
-        if key_score == 'z_n':
-            return self.__get_score_zero_pos2neg(Dk)
-        elif key_score == 'z_a':
-            return self.__get_score_zero_pos2all(Dk)
-        elif key_score == 'm_n':
-            return self.__get_score_mean_pos2neg(Dk)
-        elif key_score == 'm_a':
-            return self.__get_score_mean_pos2all(Dk)
-
-
-    def __get_score_zero_pos2neg(self, Dk):
-        Rk = np.array(Dk, dtype=float)
-        senders = np.where(Dk > 0)[0]
-        receivers = np.where(Dk < 0)[0]
-        for i in senders:
-            for j in receivers:
-                v = self.A[i, j] * Dk[i]
-                Rk[i] -= v
-                Rk[j] += v
-        s_min = np.sqrt((np.mean(Dk) ** 2) * self.N)
-        s = np.sqrt(sum(Rk**2))
-        return Rk, s - s_min
-
-
-    def __get_score_zero_pos2all(self, Dk):
-        """
-        Modification where a node sends product to all connected nodes, including those with positive demand
-        """
-        Rk = np.array(Dk, dtype=float)
-        senders = np.where(Dk > 0)[0]
-        for i in senders:
-            for j in range(self.N):
-                # if j != i and self.A[i, j] > 0:
-                if self.A[i, j] > 0:
-                    v = self.A[i, j] * Dk[i]
-                    # print(i, j, v)
-                    Rk[i] -= v
-                    Rk[j] += v
-        # return Rk, sum(np.abs(Rk))
-        s_min = np.sqrt((np.mean(Dk) ** 2) * self.N)
-        s = np.sqrt(sum(Rk**2))
-        return Rk, s - s_min
-
-
-    def __get_score_mean_pos2neg(self, Dk):
-        """
-        Modification where the score is calculated as the absolute difference from the mean demand across all nodes.
-        """
-        Rk = np.array(Dk, dtype=float)
-        senders = np.where(Dk > 0)[0]
-        receivers = np.where(Dk < 0)[0]
-        for i in senders:
-            for j in receivers:
-                v = self.A[i, j] * Dk[i]
-                Rk[i] -= v
-                Rk[j] += v
-        # return Rk, sum(np.abs(np.mean(Rk) - Rk))
-        return Rk, np.sqrt(sum((np.mean(Rk) - Rk)**2))
-
-
-    def __get_score_mean_pos2all(self, Dk):
-        """
-        Modification where a node sends product to all connected nodes, including those with positive demand
-        """
-        Rk = np.array(Dk, dtype=float)
-        senders = np.where(Dk > 0)[0]
-        for i in senders:
-            for j in range(self.N):
-                if j != i and self.A[i, j] > 0:
-                    v = self.A[i, j] * Dk[i]
-                    Rk[i] -= v
-                    Rk[j] += v
-        # return Rk, sum(np.abs(np.mean(Rk) - Rk))
-        return Rk, np.sqrt(sum((np.mean(Rk) - Rk)**2))
-
-
     def __str__(self):
         return f"\nA:\n{self.A}\nscore = {self.s:.2f}, robustness = {self.r}"
 
@@ -335,7 +294,7 @@ class TranspNetwork:
 
     def save_network(self, fpath='network.netw'):
         rob = '' if self.r is None else f', robustness={self.r:.5f}, rob_setup={key_robust}'
-        header = f'# score={self.s:.4f}, opt_setup={key_score}{rob}\n'
+        header = f'# score={self.s:.4f}, opt_setup={key_distalg}-{key_score}_{key_snrom}{rob}\n'
 
         with codecs.open(fpath, 'w') as fout:
             fout.write(header)
@@ -344,7 +303,7 @@ class TranspNetwork:
                 line = ' '.join(['%8.6f'%x for x in row])
                 fout.write(line + '\n')
 
-            fout.write(f'# demand pattern D, K={np.shape(self.D)[0]}\n')
+            fout.write(f'# demand pattern D, K={self.K}\n')
             for row in self.D:
                 line = ' '.join(['%8.4f'%x for x in row])
                 fout.write(line + '\n')
@@ -354,21 +313,18 @@ class TranspNetwork:
         if not os.path.exists(path):
             os.makedirs(path)
 
-        for k in range(np.shape(self.D)[0]):
-            Dk = self.D[k]
-            Rk, x = self.__get_score(Dk)
-
+        for _k in range(self.K):
             _, ax = plt.subplots(figsize=(8, 6))
-            ax.set_title(f'k={k}, score={x:.2f}, mean={np.mean(Dk):.2f}')
-            ax.bar([i for i in range(self.N)], Dk, color='#fff2c9', lw=1.0, ec='#e89c0e', hatch="...", zorder=0)
-            ax.bar([i for i in range(self.N)], Rk, color='#c9dbff', lw=1.0, ec='#4b61a6', hatch="//", zorder=1)
+            ax.set_title(f'k={_k}, mean={np.mean(self.D[_k]):.2f}')
+            ax.bar([i for i in range(self.N)], self.D[_k], color='#fff2c9', lw=1.0, ec='#e89c0e', hatch="...", zorder=0)
+            ax.bar([i for i in range(self.N)], self.R[_k], color='#c9dbff', lw=1.0, ec='#4b61a6', hatch="//", zorder=1)
 
             ax.set_xlabel('node id')
             ax.set_ylabel('demand level')
             ax.grid(alpha = 0.4, linestyle = '--', linewidth = 0.2, color = 'black', zorder=0)
 
             # plt.show()
-            plt.savefig(path + f"d={k:02d}.png", dpi=400, bbox_inches = 'tight')
+            plt.savefig(path + f"d={_k:02d}.png", dpi=400, bbox_inches = 'tight')
             plt.close()
 
 
@@ -395,8 +351,8 @@ class TranspNetwork:
         if not draw_all:
             return
          
-        for k in range(np.shape(self.D)[0]):
-            fname = f'nw-{k:02d}'
+        for _k in range(self.K):
+            fname = f'nw-{_k:02d}'
             with codecs.open(path + '%s.dot'%fname, "w") as fout:
                 fout.write('strict digraph {\n')
                 fout.write('\tgraph [splines="spline"];\n')
@@ -404,19 +360,20 @@ class TranspNetwork:
                 active = []
                 for i in range(self.N):
                     color = '#df8a8a'
-                    if self.D[k, i] >= 0:
+                    if self.D[_k, i] >= 0:
                         active.append(i)
                         color = '#b2df8a'
                     fout.write(f'\t{i}\t\t[label="{i}"; width=1.0; "style"= "filled"; "fillcolor"="{color}"]\n')
                 for i, j in self.edges:
                     if i in active:
-                        if self.D[k, j] < 0 or key_score in ['z_a', 'm_a']:
+                        if self.D[_k, j] < 0 or key_distalg == 'p2a':
                             w = 0.4 + 2.0 * self.A[i,j]
                             fout.write(f'\t{i} -> {j}\t\t[penwidth={w:.3f}]\n')
 
                 fout.write('}')
             arguments = [graphviz_path, '-Tpng', '%s.dot'%(path + fname), '-o', '%s.png'%(path + fname)]
             run(args=arguments)
+
 
 
 
@@ -432,7 +389,7 @@ def heuristic_annealing_optimization(N, K, n_seeds, n_runs=1, r_direction='max')
     ds_margin = 0.1
     r_threshold = 0.01
     
-    path = 'res-opt/heuristic-annealing/N={}-K={}-s={}-rt={:.2f}-{}/'.format(N, K, key_score, r_threshold, r_direction)
+    path = 'res-opt/heuristic-annealing/N={}-K={}-s={}_{}_{}-rt={:.2f}-{}/'.format(N, K, key_distalg, key_score, key_snrom, r_threshold, r_direction)
 
     if not os.path.exists(path):
         os.makedirs(path)
@@ -504,7 +461,7 @@ def heuristic_annealing_optimization(N, K, n_seeds, n_runs=1, r_direction='max')
             plt.scatter(nw_r_all['score'], nw_r_all['robustness'], s=5, facecolors='none', edgecolors='C2', alpha=0.4, label='robust all')
 
             plt.title('Heuristic annealing robustness {}imization\nN={}, K={}, rt={:.3f}, Δs={:.3f}\nGs={}, Gr={}'\
-                .format(r_direction,N, K, r_threshold, 100*ds_margin, G_s, G_r))
+                .format(r_direction, N, K, r_threshold, 100*ds_margin, G_s, G_r))
             ax.set_xlabel('score')
             ax.set_ylabel('robustness')
             ax.legend(loc='lower right')
@@ -547,7 +504,7 @@ def simulated_annealing_optimization(N, K, n_seeds, n_runs, r_direction='max'):
             plt.close()
 
     
-    path = 'res-opt/simulated_annealing/N={}-K={}-s={}-rt={:.2f}-{}/'.format(N, K, key_score, r_threshold, r_direction)
+    path = 'res-opt/simulated_annealing/N={}-K={}-s={}_{}_{}-rt={:.2f}-{}/'.format(N, K, key_distalg, key_score, key_snrom, r_threshold, r_direction)
 
     if not os.path.exists(path):
         os.makedirs(path)
@@ -626,12 +583,13 @@ def simulated_annealing_optimization(N, K, n_seeds, n_runs, r_direction='max'):
 
 
 
+
 class Pareto:
     def optimization(self, N, K, n_seeds, n_runs):
         G_max = 100001
         r_threshold = 0.01
 
-        path = 'res-opt/pareto/N={}-K={}-s={}-rt={:.4f}-elim={}/'.format(N, K, key_score, r_threshold, key_edgelim)
+        path = 'res-opt/pareto/N={}-K={}-s={}_{}_{}-rt={:.4f}-elim={}/'.format(N, K, key_distalg, key_score, key_snrom, r_threshold, key_edgelim)
 
         if not os.path.exists(path):
             os.makedirs(path)
@@ -663,7 +621,6 @@ class Pareto:
                 self.max_r = NW.r
                 self.min_r = NW.r
 
-
                 for i in range(G_max):
                     nw_mut = self.__get_random_nw()
                     nw_mut.mutate()
@@ -689,12 +646,10 @@ class Pareto:
                     for _nw in elems_to_place:
                         self.__place_elem(_nw)
 
-
                     if i > 0 and i % 10000 == 0:
                         print(f'({i}, {self.min_s:.3f}, {self.max_r:.4f}, {self.min_r:.4f})', end=' ', flush=True)
                         print()
                         self.__plot_convergence(N, K, r_threshold, i)
-
 
                     if i > 0 and i % 20000 == 0:
                         self.__save_optimal(i)
@@ -806,7 +761,7 @@ class Pareto:
 
 
 if __name__ == "__main__":
-    N = 5
+    N = 10
     K = 1
     Pareto().optimization(N, K, n_seeds=1, n_runs=1)
     # heuristic_annealing_optimization(N, K, 1, 1, 'min')
