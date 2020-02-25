@@ -1,6 +1,7 @@
 # Project-specific
 res-*/
 _tests/
+tests.py
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
