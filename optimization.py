@@ -197,7 +197,6 @@ class TranspNetwork:
             mut_type = np.random.choice(['rand_row', 'exch_val', 'make_0', 'swap_val'], p=[0.25, 0.25, 0.25, 0.25])
             i = np.random.choice(non_zero_rows)
 
-        # print('Making a mutation "{}" with row i={}'.format(mut_type, i))
         if mut_type == 'rand_row':
             row = np.random.randint(0, 100, size=self.N)
             row[i] = 0
@@ -216,7 +215,6 @@ class TranspNetwork:
             p_send = np.random.random()
             if p_send < 0.7:
                 j_gets = np.random.choice([x for x in range(self.N) if not x in [j_gives, i]])
-                # print('From {} to {}, the value of {:.2f} (max was {:.2f})'.format(j_gives, j_gets, h, self.A[i, j_gives]))
                 self.A[i, j_gets]  += h
 
         elif mut_type == 'swap_val':
@@ -278,12 +276,11 @@ class TranspNetwork:
 
 
     def __str__(self):
-        return f"\nA:\n{self.A}\nscore = {self.s:.2f}, robustness = {self.r}"
+        return f'\nA:\n{self.A}\nscore = {self.s:.2f}, robustness = {self.r}'
 
 
     def __repr__(self):
-        # return "{:.1f}".format(self.s)
-        return f"({self.s:.1f}, {self.r:.3f})"
+        return f'({self.s:.1f}, {self.r:.3f})'
 
 
     def save_edges(self, fpath='network.edges'):
@@ -316,15 +313,15 @@ class TranspNetwork:
         for _k in range(self.K):
             _, ax = plt.subplots(figsize=(8, 6))
             ax.set_title(f'k={_k}, mean={np.mean(self.D[_k]):.2f}')
-            ax.bar([i for i in range(self.N)], self.D[_k], color='#fff2c9', lw=1.0, ec='#e89c0e', hatch="...", zorder=0)
-            ax.bar([i for i in range(self.N)], self.R[_k], color='#c9dbff', lw=1.0, ec='#4b61a6', hatch="//", zorder=1)
+            ax.bar([i for i in range(self.N)], self.D[_k], color='#fff2c9', lw=1.0, ec='#e89c0e', hatch='...', zorder=0)
+            ax.bar([i for i in range(self.N)], self.R[_k], color='#c9dbff', lw=1.0, ec='#4b61a6', hatch='//', zorder=1)
 
             ax.set_xlabel('node id')
             ax.set_ylabel('demand level')
             ax.grid(alpha = 0.4, linestyle = '--', linewidth = 0.2, color = 'black', zorder=0)
 
             # plt.show()
-            plt.savefig(path + f"d={_k:02d}.png", dpi=400, bbox_inches = 'tight')
+            plt.savefig(path + f'd={_k:02d}.png', dpi=400, bbox_inches = 'tight')
             plt.close()
 
 
@@ -335,7 +332,7 @@ class TranspNetwork:
         graphviz_path = 'C:/Program Files (x86)/Graphviz/bin/dot.exe' if system() == 'Windows' else 'dot'
 
         fname = 'nw_general'
-        with codecs.open(path + '%s.dot'%fname, "w") as fout:
+        with codecs.open(path + '%s.dot'%fname, 'w') as fout:
             fout.write('strict digraph {\n')
             fout.write('\tgraph [splines="spline"];\n')
             fout.write('\tnode [fixedsize=true, fontname=helvetica, fontsize=10, label="\\N", shape=circle, style=solid];\n')
@@ -353,7 +350,7 @@ class TranspNetwork:
          
         for _k in range(self.K):
             fname = f'nw-{_k:02d}'
-            with codecs.open(path + '%s.dot'%fname, "w") as fout:
+            with codecs.open(path + '%s.dot'%fname, 'w') as fout:
                 fout.write('strict digraph {\n')
                 fout.write('\tgraph [splines="spline"];\n')
                 fout.write('\tnode [fixedsize=true, fontname=helvetica, fontsize=10, label="\\N", shape=circle, style=solid];\n')
@@ -389,11 +386,11 @@ def heuristic_annealing_optimization(N, K, n_seeds, n_runs=1, r_direction='max')
     ds_margin = 0.1
     r_threshold = 0.01
     
-    path = 'res-opt/heuristic-annealing/N={}-K={}-s={}_{}_{}-rt={:.2f}-{}/'.format(N, K, key_distalg, key_score, key_snrom, r_threshold, r_direction)
+    path = f'res-opt/heuristic_annealing/N={N}-K={K}-s={key_distalg}_{key_score}_{key_snrom}-rt={r_threshold:.2f}-{r_direction}/'
 
     if not os.path.exists(path):
         os.makedirs(path)
-    print('Heuristic annealing optimization\n{}'.format(path))
+    print('Heuristic annealing optimization\n', path)
 
 
     for i_seed in range(n_seeds):
@@ -404,9 +401,9 @@ def heuristic_annealing_optimization(N, K, n_seeds, n_runs=1, r_direction='max')
         for i_run in range(n_runs):
             if n_runs > 1:
                 print('\n   new run;', i_run)
-                path_run = path + 'seed={:02d}-run={:02d}/'.format(i_seed, i_run)
+                path_run = path + f'seed={i_seed:02d}-run={i_run:02d}/'
             else:
-                path_run = path + 'seed={:02d}/'.format(i_seed)
+                path_run = path + f'seed={i_seed:02d}/'
 
             if not os.path.exists(path_run):
                 os.makedirs(path_run)
@@ -428,13 +425,13 @@ def heuristic_annealing_optimization(N, K, n_seeds, n_runs=1, r_direction='max')
                     nw_best['robustness'].append(NW.r)
 
                 if i % 500 == 0:
-                    print('({}, {:.4f})'.format(i, NW.s), end=' ', flush=True)
+                    print(f'({i}, {NW.s:.4f})', end=' ', flush=True)
             print()
 
             s_min = NW.s
-            NW.save_network(path_run + 'Gs={:05d}-best_s.netw'.format(G_s))
-            NW.save_edges(path_run + 'Gs={:05d}-best_s.edges'.format(G_s))
-            print("Best score: {:.2f}, robustness: {:.4f}".format(s_min, NW.r))
+            NW.save_network(path_run + f'Gs={G_s:05d}-best_s.netw')
+            NW.save_edges(path_run + f'Gs={G_s:05d}-best_s.edges')
+            print(f'Best score: {s_min:.2f}, robustness: {NW.r:.4f}')
 
             nw_r_all = {'score': [], 'robustness': []}
             nw_r_best = {'score': [NW.s], 'robustness': [NW.r]}
@@ -451,7 +448,7 @@ def heuristic_annealing_optimization(N, K, n_seeds, n_runs=1, r_direction='max')
                         nw_r_best['score'].append(NW.s)
                         nw_r_best['robustness'].append(NW.r)
                 if i % 500 == 0:
-                    print('({}, {:.4f}, {:.4f})'.format(i, NW.s, NW.r), end=' ', flush=True)
+                    print(f'({i}, {NW.s:.4f}, {NW.r:.4f})', end=' ', flush=True)
 
             _, ax = plt.subplots(figsize=(8,6))
             plt.plot(nw_best['score'], nw_best['robustness'], 'o-', ms=2, color='C1', alpha=0.7, label='score best')
@@ -460,19 +457,20 @@ def heuristic_annealing_optimization(N, K, n_seeds, n_runs=1, r_direction='max')
             plt.plot(nw_r_best['score'], nw_r_best['robustness'], 'o-', ms=2, color='C3', alpha=0.7, label='robust best')
             plt.scatter(nw_r_all['score'], nw_r_all['robustness'], s=5, facecolors='none', edgecolors='C2', alpha=0.4, label='robust all')
 
-            plt.title('Heuristic annealing robustness {}imization\nN={}, K={}, rt={:.3f}, Δs={:.3f}\nGs={}, Gr={}'\
-                .format(r_direction, N, K, r_threshold, 100*ds_margin, G_s, G_r))
+            plt.title(f'Heuristic annealing robustness {r_direction}imization\n' + \
+                        f'N={N}, K={K}, rt={r_threshold:.3f}, Δs={100*ds_margin:.3f}\n' + \
+                        f'Gs={G_s}, Gr={G_r}')
             ax.set_xlabel('score')
             ax.set_ylabel('robustness')
             ax.legend(loc='lower right')
             ax.grid(alpha = 0.4, linestyle = '--', linewidth = 0.2, color = 'black')
-            plt.savefig(path_run + 'opt_conv-Gs={:05d}-Gr={:05d}.png'.format(G_s, G_r), bbox_inches = 'tight', pad_inches=0.1, dpi=400)
+            plt.savefig(path_run + f'opt_conv-Gs={G_s:05d}-Gr={G_r:05d}.png', bbox_inches = 'tight', pad_inches=0.1, dpi=400)
             # plt.show()
             plt.close()
 
-            print("Robustness optimization finished!\nFinal score: {:.2f}, robustness: {:.4f}".format(NW.s, NW.r))
-            NW.save_network(path_run + 'Gr={:05d}-best_r.netw'.format(G_r))
-            NW.save_edges(path_run + 'Gr={:05d}-best_r.edges'.format(G_r))
+            print(f'Robustness optimization finished!\nFinal score: {NW.s:.2f}, robustness: {NW.r:.4f}')
+            NW.save_network(path_run + f'Gr={G_r:05d}-best_r.netw')
+            NW.save_edges(path_run + f'Gr={G_r:05d}-best_r.edges')
 
 
 
@@ -494,21 +492,22 @@ def simulated_annealing_optimization(N, K, n_seeds, n_runs, r_direction='max'):
             plt.scatter(nw_all['score'], nw_all['robustness'], s=5, facecolors='none', edgecolors='C0', alpha=0.4, label='all')
             plt.scatter(NW.s, NW.r, s=25, color='C3', alpha=1.0, label='best', zorder=3)
 
-            plt.title('Simulated annealing robustness {}imization\nN={}, K={}, rt={:.3f}, σ={}\nG={}'.format(r_direction,N, K, r_threshold, sigma, i))
+            plt.title(f'Simulated annealing robustness {r_direction}imization\n' + \
+                        f'N={N}, K={K}, rt={r_threshold:.3f}, σ={sigma}\nG={i}')
             ax.set_xlabel('score')
             ax.set_ylabel('robustness')
             ax.legend(loc='lower right')
             ax.grid(alpha = 0.4, linestyle = '--', linewidth = 0.2, color = 'black')
-            plt.savefig(path_run + 'opt_conv-G={:05d}.png'.format(i), bbox_inches = 'tight', pad_inches=0.1, dpi=400)
+            plt.savefig(path_run + f'opt_conv-G={i:05d}.png', bbox_inches = 'tight', pad_inches=0.1, dpi=400)
             # plt.show()
             plt.close()
 
     
-    path = 'res-opt/simulated_annealing/N={}-K={}-s={}_{}_{}-rt={:.2f}-{}/'.format(N, K, key_distalg, key_score, key_snrom, r_threshold, r_direction)
+    path = f'res-opt/simulated_annealing/N={N}-K={K}-s={key_distalg}_{key_score}_{key_snrom}-rt={r_threshold:.2f}-{r_direction}/'
 
     if not os.path.exists(path):
         os.makedirs(path)
-    print('Simulated annealing optimization\n{}'.format(path))
+    print('Simulated annealing optimization\n', path)
 
 
     for i_seed in range(n_seeds):
@@ -519,9 +518,9 @@ def simulated_annealing_optimization(N, K, n_seeds, n_runs, r_direction='max'):
         for i_run in range(n_runs):
             if n_runs > 1:
                 print('\n   new run;', i_run)
-                path_run = path + 'seed={:02d}-run={:02d}/'.format(i_seed, i_run)
+                path_run = path + f'seed={i_seed:02d}-run={i_run:02d}/'
             else:
-                path_run = path + 'seed={:02d}/'.format(i_seed)
+                path_run = path + f'seed={i_seed:02d}/'
 
             if not os.path.exists(path_run):
                 os.makedirs(path_run)
@@ -541,7 +540,6 @@ def simulated_annealing_optimization(N, K, n_seeds, n_runs, r_direction='max'):
 
                 s, s1 = NW.s, NW_1.s
                 r, r1 = NW.r, NW_1.r
-                # print('{:6d}  initial: ({:.2f}, {:.4f}),   mutated: ({:.2f}, {:.4f})'.format(i, s, r, s1, r1))
 
                 if s1 <= s and better_r(r1, r):
                     NW = NW_1
@@ -550,7 +548,7 @@ def simulated_annealing_optimization(N, K, n_seeds, n_runs, r_direction='max'):
                 elif s1 <= s and not better_r(r1, r):
                     # T = G * sigma / i;  p = e**(-1 / T)
                     prob = np.exp(-i / G / sigma)
-                    # print('Worse robustness, p = {:.5f}'.format(prob))
+                    # print(f'Worse robustness, p = {prob:.5f}')
                     if np.random.random() <= prob:
                         # print('--accepted!')
                         NW = NW_1
@@ -559,7 +557,7 @@ def simulated_annealing_optimization(N, K, n_seeds, n_runs, r_direction='max'):
                 elif better_r(r1, r) and s1 > s:
                     prob = np.exp(-i / G / sigma) / 4
                     prob_s = 10 ** (-2 * (s1 - s) / (s1 + s) / sigma)
-                    # print('Worse score, p = {:.5f}, ps = {:.5}, total = {:.5}'.format(prob, prob_s, prob * prob_s))
+                    # print(f'Worse score, p = {prob:.5f}, ps = {prob_s:.5}, total = {prob * prob_s:.5}')
                     if np.random.random() <= prob * prob_s:
                         # print('--accepted!')
                         NW = NW_1
@@ -568,7 +566,7 @@ def simulated_annealing_optimization(N, K, n_seeds, n_runs, r_direction='max'):
                 else:
                     prob = np.exp(-i / G / sigma) / 5
                     prob_s = 10 ** (-2 * (s1 - s) / (s1 + s) / sigma)
-                    # print('Both worse, p = {:.5f}, ps = {:.5}, total = {:.5}'.format(prob, prob_s, prob * prob_s))
+                    # print(f'Both worse, p = {prob:.5f}, ps = {prob_s:.5}, total = {prob * prob_s:.5}')
                     if np.random.random() <= prob * prob_s:
                         # print('--accepted!')
                         NW = NW_1
@@ -576,9 +574,9 @@ def simulated_annealing_optimization(N, K, n_seeds, n_runs, r_direction='max'):
                         nw_best['robustness'].append(NW.r)
 
                 if i > 0 and i % 2000 == 0:
-                    print('({}, {:.4f}, {})'.format(i, NW.s, len(NW.edges)), end=' ', flush=True)
-                    NW.save_network(path_run + 'G={:05d}.netw'.format(i))
-                    NW.save_edges(path_run + 'G={:05d}.edges'.format(i))
+                    print(f'({i}, {NW.s:.4f}, {len(NW.edges)})', end=' ', flush=True)
+                    NW.save_network(path_run + f'G={i:05d}.netw')
+                    NW.save_edges(path_run + f'G={i:05d}.edges')
                     draw_convergence(nw_all, nw_best, i, NW)
 
 
@@ -589,11 +587,10 @@ class Pareto:
         G_max = 100001
         r_threshold = 0.01
 
-        path = 'res-opt/pareto/N={}-K={}-s={}_{}_{}-rt={:.4f}-elim={}/'.format(N, K, key_distalg, key_score, key_snrom, r_threshold, key_edgelim)
-
+        path = f'res-opt/pareto/N={N}-K={K}-s={key_distalg}_{key_score}_{key_snrom}-rt={r_threshold:.4f}-elim={key_edgelim}/'
         if not os.path.exists(path):
             os.makedirs(path)
-        print('Pareto optimization\n{}'.format(path))
+        print('Pareto optimization\n', path)
 
         for i_seed in range(n_seeds):
             print('\nNew demand seed;', i_seed)
@@ -603,9 +600,9 @@ class Pareto:
             for i_run in range(n_runs):
                 if n_runs > 1:
                     print('\n   new run;', i_run)
-                    self.path_run = path + 'seed={:02d}-run={:02d}/'.format(i_seed, i_run)
+                    self.path_run = path + f'seed={i_seed:02d}-run={i_run:02d}/'
                 else:
-                    self.path_run = path + 'seed={:02d}/'.format(i_seed)
+                    self.path_run = path + f'seed={i_seed:02d}/'
                 if not os.path.exists(self.path_run):
                     os.makedirs(self.path_run)
 
@@ -629,7 +626,7 @@ class Pareto:
                     self.nw_all['robustness'].append(nw_mut.r)
 
                     if nw_mut.s < self.min_s:
-                        # print("Case 0. Replace pareto_best")
+                        # print('Case 0. Replace pareto_best')
                         self.min_s = nw_mut.s
                         self.max_r = nw_mut.r
                         self.min_r = nw_mut.r
@@ -670,7 +667,7 @@ class Pareto:
         assert(nw_mut.s >= self.min_s)
 
         if nw_mut.s == self.min_s:
-            # print("Case 1. Extend pareto_best")
+            # print('Case 1. Extend pareto_best')
             for nw in self.pareto_best:
                 if nw.r == nw_mut.r:
                     break
@@ -687,12 +684,12 @@ class Pareto:
                 self.pareto_lr = [_nw for _nw in self.pareto_lr if _nw.r < self.min_r]
 
         elif nw_mut.r > self.max_r:
-            # print("Case 2. Update pareto_HR")
+            # print('Case 2. Update pareto_HR')
             # Check if the mutated network will fit to the existing pareto HR
             self.__add_to_HR(nw_mut)
 
         elif nw_mut.r < self.min_r:
-            # print("Case 3. Update pareto_LR")
+            # print('Case 3. Update pareto_LR')
             # Check if the mutated network will fit to the existing pareto LR
             self.__add_to_LR(nw_mut)
 
@@ -700,7 +697,6 @@ class Pareto:
     def __add_to_HR(self, nw_mut):
         for _nw in self.pareto_hr:
             if nw_mut.s >= _nw.s and nw_mut.r <= _nw.r:
-            # if _nw.s >= nw_mut.s and _nw.r <= nw_mut.r:
                 break
         else:
             self.pareto_hr = [_nw for _nw in self.pareto_hr if (_nw.r > nw_mut.r or _nw.s < nw_mut.s)]
@@ -708,14 +704,10 @@ class Pareto:
 
 
     def __add_to_LR(self, nw_mut):
-        # print('LR: ({:.2f}, {:.4f}) to {}'.format(nw_mut.s, nw_mut.r, pareto_lr))
-
         for _nw in self.pareto_lr:
             if nw_mut.s >= _nw.s and nw_mut.r >= _nw.r:
-                # print('Don`t add.')
                 break
         else:
-            # print('Add and replace some')
             self.pareto_lr = [_nw for _nw in self.pareto_lr if (_nw.r < nw_mut.r or _nw.s < nw_mut.s)]
             self.pareto_lr.append(nw_mut)
 
@@ -749,18 +741,18 @@ class Pareto:
     def __save_optimal(self, i):
         j = 0
         for _nw in sorted(self.pareto_lr + self.pareto_best + self.pareto_hr, key=lambda x: x.r):
-            save_path = self.path_run + 'G_{:05d}/'.format(i)
+            save_path = self.path_run + f'G_{i:05d}/'
             if not os.path.exists(save_path):
                 os.makedirs(save_path)
 
-            _nw.save_network(save_path + 'i={:04d}.netw'.format(j))
-            _nw.save_edges(save_path + 'i={:04d}.edges'.format(j))
+            _nw.save_network(save_path + f'i={j:04d}.netw')
+            _nw.save_edges(save_path + f'i={j:04d}.edges')
             j += 1
 
 
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     N = 10
     K = 1
     Pareto().optimization(N, K, n_seeds=1, n_runs=1)
