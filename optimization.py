@@ -19,7 +19,7 @@ key_distalg = ['p2n', 'p2a'][0]
 key_robust = ['r0', 'rp'][0]
 key_edgelim = ['none', 'hard', 'soft_c', 'soft_e'][0]
 key_score = ['s0', 'sm'][0]     # score is calculated as: quadratic difference from zero / from mean
-key_snrom = ['sq', 'DN'][1]   # score is normalized via: square root / division by N
+key_snrom = ['sq', 'dn'][1]   # score is normalized via: square root / division by N
 min_w = 0.01
 
 
@@ -104,7 +104,7 @@ class TranspNetwork:
 
             if key_snrom == 'sq':
                 _s = np.sqrt(_s)
-            elif key_snrom == 'DN':
+            elif key_snrom == 'dn':
                 _s = _s / self.N
 
             self.s += _s
@@ -644,7 +644,7 @@ class Pareto:
                         self.__place_elem(_nw)
 
                     if i > 0 and i % 10000 == 0:
-                        print(f'({i}, {self.min_s:.3f}, {self.max_r:.4f}, {self.min_r:.4f})', end=' ', flush=True)
+                        print(f'({i}, {self.min_s:.3f}, {self.min_r:.4f}, {self.max_r:.4f})', end=' ', flush=True)
                         print()
                         self.__plot_convergence(N, K, r_threshold, i)
 
