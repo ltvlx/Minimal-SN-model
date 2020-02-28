@@ -78,7 +78,8 @@ class TranspNetwork:
                 self.edges.remove(_e)
                 self.A[i, j] = 0
 
-        self.calculate_score(D)
+        self.calc_redistributed_demand(D)
+        self.calculate_score()
         # self.calculate_robustness(D)
 
         if key_edgelim == 'soft_c' and len(self.edges) > self.M_max:
@@ -87,19 +88,14 @@ class TranspNetwork:
             self.s *= 1.05 ** (max(len(self.edges) - self.M_max, 0))
 
 
-    def calculate_score(self, D):
-        if D is None:
-            D = self.D
-        
-        self.calc_redistributed_demand(D)
-                
+    def calculate_score(self):
         self.s = 0.0
         for _k in range(self.K):
             if key_score == 's0':
                 _s = sum(self.R[_k]**2)
                 # self.s += np.sqrt(sum(self.R[_k]**2))
             elif key_score == 'sm':
-                m = np.mean(self.D[_k])
+                m = np.mean(self.R[_k])
                 _s = sum((self.R[_k] - m)**2)
 
             if key_snrom == 'sq':
@@ -111,6 +107,9 @@ class TranspNetwork:
 
 
     def calc_redistributed_demand(self, D):
+        if D is None:
+            D = self.D
+
         self.R = np.array(self.D, dtype=float)
 
         for _k in range(self.K):
@@ -141,7 +140,8 @@ class TranspNetwork:
             self.A[i, j] = 0
             if key_robust == 'rp' and np.sum(self.A[i]) > 0:
                 self.A[i] = self.A[i] / np.sum(self.A[i])
-            self.calculate_score(D)
+            self.calc_redistributed_demand(D)
+            self.calculate_score()
             s_rob = self.s
 
             self.A[i] = row
@@ -173,7 +173,8 @@ class TranspNetwork:
             self.A[i, j] = 0
             if key_robust == 'rp' and np.sum(self.A[i]) > 0:
                 self.A[i] = self.A[i] / np.sum(self.A[i])
-            self.calculate_score(D)
+            self.calc_redistributed_demand(D)
+            self.calculate_score()
 
             self.r += self.s
 
@@ -585,7 +586,7 @@ def simulated_annealing_optimization(N, K, n_seeds, n_runs, r_direction='max'):
 class Pareto:
     def optimization(self, N, K, n_seeds, n_runs):
         G_max = 100001
-        r_threshold = 0.01
+        r_threshold = 0.10
 
         path = f'res-opt/pareto/N={N}-K={K}-s={key_distalg}_{key_score}_{key_snrom}-rt={r_threshold:.4f}-elim={key_edgelim}/'
         if not os.path.exists(path):
