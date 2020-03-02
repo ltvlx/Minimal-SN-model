@@ -89,6 +89,9 @@ class TranspNetwork:
 
 
     def calculate_score(self):
+        """
+        calculate network score based on the redistributed demand (self.R)
+        """
         self.s = 0.0
         for _k in range(self.K):
             if key_score == 's0':
@@ -107,6 +110,9 @@ class TranspNetwork:
 
 
     def calc_redistributed_demand(self, D):
+        """
+        calculate the network score base on the redistributed demand (self.R)
+        """
         if D is None:
             D = self.D
 
@@ -128,14 +134,14 @@ class TranspNetwork:
                     self.R[_k, j] += v
 
 
-    def calculate_robustness(self, D=None):
+    def calculate_robustness_old(self, D=None):
         if D is None:
             D = self.D
 
         n_rob = 0
+        s_init = self.s
         for i, j in self.edges:
             row = np.array(self.A[i])
-            s_init = self.s
 
             self.A[i, j] = 0
             if key_robust == 'rp' and np.sum(self.A[i]) > 0:
@@ -145,11 +151,40 @@ class TranspNetwork:
             s_rob = self.s
 
             self.A[i] = row
-            self.s = s_init
             rate = (s_rob - s_init) / s_init
-            
             if rate <= self.r_threshold:
                 n_rob += 1
+
+        self.r = n_rob / len(self.edges)
+        # print(f'Classical robustness r={self.r:.4f}\n\n')
+
+
+    def calculate_robustness(self):
+        n_rob = 0
+        R_init = np.array(self.R)
+        s_init = self.s
+
+        for i, j in self.edges:
+            active_edge = False
+            for _k in range(self.K):
+                if self.D[_k, i] > 0 and (self.D[_k, j] < 0 or key_distalg == 'p2a'):
+                    active_edge = True
+                    v = self.A[i, j] * self.D[_k, i]
+                    self.R[_k, i] += v
+                    self.R[_k, j] -= v
+
+            if active_edge:
+                self.calculate_score()
+                self.R = np.array(R_init)
+                if (self.s - s_init) / s_init <= self.r_threshold:
+                    n_rob += 1
+            else:
+                n_rob += 1
+
+            R_init = np.array(self.R)
+
+        self.R = np.array(R_init)
+        self.s = s_init
 
         self.r = n_rob / len(self.edges)
 
