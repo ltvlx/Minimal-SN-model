@@ -5,19 +5,20 @@ import numpy as np
 
 
 def run_var_pos(N, s_a, s_b):
-    products = [(set([0]), set(range(N>>1, N)))]
-
+    # products = [(set([0]), set(range(N>>1, N)))]
     for i_seed in range(s_a, s_b):
-        rng = np.random.default_rng(i_seed)
-        
-        # Variation of node positions
-        x = rng.uniform(0.0, 10.0, N)
-        y = rng.uniform(0.0, 10.0, N)
-        opt.stretch_coordinates(x,y)
+        # rng = np.random.default_rng(i_seed)
+        # # Variation of node positions
+        # x = rng.uniform(0.0, 10.0, N)
+        # y = rng.uniform(0.0, 10.0, N)
+        # opt.stretch_coordinates(x,y)
+
+        basic_edges = opt.read_edges(f'seed={i_seed:03d}/G_00500/i=0000.edges')
+        setup = opt.NetworkSetup(0,[],[],[])
+        setup.load_setup(f'seed={i_seed:03d}/setup.txt')
 
         path = f'res-var_pos-rob_n/N={N}-rt={opt.th:.2f}/seed={i_seed:03d}/'
-
-        optimizer = opt.GeneticAlgorithm(N, x, y, products, path, 401, 300, 50)
+        optimizer = opt.GeneticAlgorithm(basic_edges, setup, path, 401, 300, 50)
         optimizer.optimize()
 
 

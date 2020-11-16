@@ -277,9 +277,10 @@ class NetworkSetup:
 
 
 class EdgeFactory:
-    def __init__(self, N):
+    def __init__(self, N, basic_edges):
         self.N = N
-        self.M_min = 1
+        self.basic_edges = basic_edges
+        self.M_min = len(basic_edges) + 1
         self.M_max = 3*N
         # self.M_max = N * (N-1) >> 1
 
@@ -291,7 +292,7 @@ class EdgeFactory:
         if m is None:
             m = rng.integers(self.M_min, self.M_max)
 
-        edges = []
+        edges = list(self.basic_edges)
         while len(edges) < m:
             u = rng.integers(0, self.N)
             v = rng.integers(0, self.N)
@@ -306,11 +307,18 @@ class EdgeFactory:
         if m is None:
             m = rng.integers(self.M_min, self.M_max)
 
-        edges = []
+        edges = list(self.basic_edges)
         sup, dem = set(), set()
         for (s, d) in products:
             sup |= s
             dem |= d
+
+        # add-on not to add extra basic edges in the next two cycles
+        for (u,v) in edges:
+            if u in sup:
+                sup.remove(u)
+            if v in dem:
+                dem.remove(v)
 
         for u in sup:
             v = rng.integers(0, self.N)
@@ -334,19 +342,18 @@ class EdgeFactory:
 
 
     def mutate(self, edges):
-        edges = list(edges)
+        edges = list(set(edges) - set(self.basic_edges))
+        m = len(edges) + len(self.basic_edges)
 
         mut_type = rng.choice(['del_edges', 'add_edges', 'replace'], p=[0.33, 0.33, 0.34])
-        m = len(edges)
-
-        if mut_type == 'del_edges' and m <= self.M_min:
+        if mut_type in ['del_edges', 'replace'] and len(edges) <= 1:
             mut_type = 'add_edges'
         elif mut_type == 'add_edges' and m >= self.M_max:
             mut_type = 'del_edges'
 
         if mut_type == 'del_edges':
             m_del = rng.integers(1, (m - self.M_min + 1))
-            edges = rng.choice(edges, m-m_del, replace=False)
+            edges = rng.choice(edges, len(edges)-m_del, replace=False)
             edges = [tuple(x) for x in edges]
 
         elif mut_type == 'add_edges':
@@ -354,30 +361,36 @@ class EdgeFactory:
             while len(edges) < m + m_add:
                 u = rng.integers(0, self.N)
                 v = rng.integers(0, self.N)
-                if u != v and not (u,v) in edges:
+                if u != v and not (u,v) in edges + self.basic_edges:
                     edges.append((u,v))
 
         elif mut_type == 'replace':
-            m_replace = rng.integers(1, m >> 1)
+            m = len(edges)
+            # print(m, flush=True)
+            m_replace = rng.integers(1, m >> 1) if m > 3 else 1
             edges = [tuple(x) for x in rng.choice(edges, m-m_replace, replace=False)]
             while len(edges) < m:
                 u = rng.integers(0, self.N)
                 v = rng.integers(0, self.N)
-                if u != v and not (u,v) in edges:
+                if u != v and not (u,v) in edges + self.basic_edges:
                     edges.append((u,v))
 
-        return sorted(edges, key=lambda x: (x[0], x[1]))
-
+        return list(self.basic_edges) + sorted(edges, key=lambda x: (x[0], x[1]))
 
 
     def recombine(self, edges_a, edges_b):
-        edges_all = list(set(edges_a + edges_b))
-        m = rng.integers(self.M_min, min(self.M_max, len(edges_all)))
+        e1 = list(set(edges_a) - set(self.basic_edges))
+        e2 = list(set(edges_b) - set(self.basic_edges))
+        edges_all = list(set(e1 + e2))
+        if len(edges_all) == 1:
+            return list(self.basic_edges) + edges_all
+
+        m = rng.integers(1, min(self.M_max-len(self.basic_edges), len(edges_all)))
         edges = random.sample(edges_all, m)
-        return sorted(edges, key=lambda x: (x[0], x[1]))
+        return list(self.basic_edges) + sorted(edges, key=lambda x: (x[0], x[1]))
 
 
-    def add_edges(self, edges, m):
+    def extend_edges(self, edges, m):
         assert(len(edges) + m <= self.N * (self.N - 1) and m > 0)
 
         while m > 0:
@@ -436,13 +449,15 @@ class GeneticAlgorithm:
         'Mutated': 0.70,
         'Random': 0.05}
     
-    def __init__(self, N, x, y, products, path, G_max=151, G_size=250, G_save=25):
+    # def __init__(self, basic_edges, N, x, y, K, products, path, G_max=151, G_size=250, G_save=25):
+    def __init__(self, basic_edges, setup, path, G_max=151, G_size=250, G_save=25):
         self.G_max = G_max 
         self.G_size = G_size
         self.G_save = G_save
 
-        self.setup = NetworkSetup(N, x, y, products)
-        self.EFACT = EdgeFactory(N)
+        # self.setup = NetworkSetup(N, x, y, products)
+        self.setup = setup
+        self.EFACT = EdgeFactory(setup.N, basic_edges)
 
         self.path = path
         if not os.path.exists(self.path):
@@ -465,8 +480,8 @@ class GeneticAlgorithm:
         # population is a list of Network() objects
         self.population = []
         while len(self.population) < self.G_size:
-            # edges = self.EFACT.generate_random()
-            edges = self.EFACT.generate_random_smart(self.setup.products)
+            edges = self.EFACT.generate_random()
+            # edges = self.EFACT.generate_random_smart(self.setup.products)
             nw = Network(edges)
             nw.evaluate(self.setup)
 
@@ -505,8 +520,8 @@ class GeneticAlgorithm:
 
         G_rnd = []
         while len(G_rnd) < int(self.G_size * self.gen_prop['Random']):
-            # e_new = self.EFACT.generate_random()
-            e_new = self.EFACT.generate_random_smart(self.setup.products)
+            e_new = self.EFACT.generate_random()
+            # e_new = self.EFACT.generate_random_smart(self.setup.products)
             nw_new = Network(e_new)
             nw_new.evaluate(self.setup)
             # if nw_new.ds >= th and (not nw_new in pool + G_rec + G_mut):
