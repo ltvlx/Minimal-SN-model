@@ -336,7 +336,7 @@ class EdgeFactory:
     def mutate(self, edges):
         edges = list(edges)
 
-        mut_type = rng.choice(['del_edges', 'add_edges', 'replace', 'rewire'], p=[0.3, 0.3, 0.3, 0.1])
+        mut_type = rng.choice(['del_edges', 'add_edges', 'replace'], p=[0.33, 0.33, 0.34])
         m = len(edges)
 
         if mut_type == 'del_edges' and m <= self.M_min:
@@ -366,33 +366,8 @@ class EdgeFactory:
                 if u != v and not (u,v) in edges:
                     edges.append((u,v))
 
-
-        elif mut_type == 'rewire':
-            # 100 attempts to rewire two edges
-            for _ in range(100):
-                i1 = rng.integers(0, m)
-                i2 = rng.integers(0, m)
-                if i1 == i2:
-                    continue
-                
-                a = edges[i1]
-                b = edges[i2]
-
-                if a[0] == b[0] or a[1] == b[1] or a[0] == b[1] or b[0] == a[1]:
-                    # print('fail 1')
-                    continue
-                elif (a[0], b[1]) in edges or (b[0], a[1]) in edges:
-                    # print('fail 2')
-                    continue
-                else:
-                    # print('Success!!')
-                    edges.remove(a)
-                    edges.remove(b)
-                    edges.append((a[0], b[1]))
-                    edges.append((b[0], a[1]))
-                    break
-
         return sorted(edges, key=lambda x: (x[0], x[1]))
+
 
 
     def recombine(self, edges_a, edges_b):
@@ -413,14 +388,6 @@ class EdgeFactory:
                 m -= 1
         return sorted(edges, key=lambda x: (x[0], x[1]))
 
-
-    def read_edges(self, fpath):
-        edges = []
-        with codecs.open(fpath, 'r') as fin:
-            for line in fin:
-                vals = line.split()
-                edges.append((int(vals[0]), int(vals[1])))
-        return edges
 
 
 
@@ -676,13 +643,20 @@ class GeneticAlgorithm:
 
 
 
-
-
 def save_edges(edges, fpath='nw_edges.txt'):
     with codecs.open(fpath, 'w') as fout:
         for u, v in edges:
             fout.write(f'{u} {v} 1\n')
 
+
+
+def read_edges(fpath):
+    edges = []
+    with codecs.open(fpath, 'r') as fin:
+        for line in fin:
+            vals = line.split()
+            edges.append((int(vals[0]), int(vals[1])))
+    return edges
 
 
 
