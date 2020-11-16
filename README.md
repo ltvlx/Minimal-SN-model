@@ -3,7 +3,8 @@ A minimal model of supply networks
 
 
 
-# Changelog of undocumented changes since March 2020
+<details><summary>Changelog of undocumented changes since March 2020</summary>
+
 ## version 11
     option to chose the robustness type (edges/nodes): 
         - edges
@@ -48,3 +49,4 @@ A minimal model of supply networks
         this was necessary to avoid unlimited growth of parents set
     - networks with same (s, r) do not influence rank of each other 
 
+</details>
