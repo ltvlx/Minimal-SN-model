@@ -1,819 +1,803 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.patheffects as path_effects
 import networkx as nx
-import os
-import codecs
-from subprocess import run
+from subprocess import run, DEVNULL
 from platform import system
-import random
+import os, codecs, random, scipy, queue
+
+from numpy.random import default_rng
+rng = default_rng(0)
+
+np.set_printoptions(precision=2, suppress=True)
 
 
-np.set_printoptions(precision=4, suppress=True)
-np.random.seed(0)
-random.seed(0)
+th = 1.0
 
-# key for the function that calculates the score of a network
-
-# z/m -- distance to zero/mean; n/a -- distribution from positive to negative/all demand
-key_distalg = ['p2n', 'p2a'][0]
-key_robust = ['r0', 'rp'][0]
-key_edgelim = ['none', 'hard', 'soft_c', 'soft_e'][0]
-key_score = ['s0', 'sm'][0]     # score is calculated as: quadratic difference from zero / from mean
-key_snrom = ['sq', 'dn'][1]   # score is normalized via: square root / division by N
-min_w = 0.01
+rob_type = ['edge', 'node'][1]
+rob_active = True
 
 
-class TranspNetwork:
+class NetworkSetup:
     N = 0
-    K = 0
-    s = None
-    r = None
-    A = None
-    D = None
-    r_threshold = 0.1
+    DM = None
+    products = None
 
-    edges = set()
-
-    def __init__(self, N, D, A=None):
+    def __init__(self, N, x, y, products):
         """
-        N - number of nodes in the network
-        D - demand patterns, matrix sized (N, K)
+        N - number of nodes in the network  
+        x, y - coordinates of nodes  
+        products - list of K ((suppliers), (demanders)) tuples with indexes of suppliers and demanders of  k-th product
         """
         self.N = N
-        self.D = D
-        self.K = D.shape[0]
-        self.M_max = 0.3 * N * (N - 1)
-
-        if A is None:
-            A = np.random.randint(0, 100, size=(N, N))
-            np.fill_diagonal(A, 0)
-            # Check if some row is only zeros
-            for i in range(N):
-                while sum(A[i]) < 0.001:
-                    row = np.random.randint(0, 100, size=N)
-                    row[i] = 0
-                    A[i] = row
-            A = A / A.sum(axis=1, keepdims=True)
-            self.A = A
-        else:
-            self.A = A
-
-        self.evaluate()
+        self.products = products
+        self.x, self.y = x, y
+        self.__calc_DM()
 
 
-    def evaluate(self, D=None):
-        assert(np.all(np.sum(self.A, axis=1) < 1.01))
-
-        self.edges = set()
+    def __calc_DM(self):
+        self.DM = np.zeros((self.N, self.N))
         for i in range(self.N):
-            for j in range(self.N):
-                if self.A[i, j] < min_w:
-                    self.A[i, j] = 0
-                else:
-                    self.edges.add((i,j))
+            for j in range(i+1, self.N):
+                self.DM[i, j] = self.DM[j, i] = np.sqrt((self.x[i] - self.x[j])**2 + (self.y[i] - self.y[j])**2)
 
-        if key_edgelim == 'hard':
-            while len(self.edges) > self.M_max:
-                _e = random.sample(self.edges, 1)[0]
-                self.edges.remove(_e)
-                self.A[i, j] = 0
+                # self.DM[i, j] = self.DM[j, i] = 1.0
 
-        self.calc_redistributed_demand(D)
-        self.calculate_score()
-        # self.calculate_robustness(D)
-
-        if key_edgelim == 'soft_c' and len(self.edges) > self.M_max:
-            self.s *= 2
-        elif key_edgelim == 'soft_e':
-            self.s *= 1.05 ** (max(len(self.edges) - self.M_max, 0))
+                # d = np.sqrt((self.x[i] - self.x[j])**2 + (self.y[i] - self.y[j])**2)
+                # self.DM[i, j] = self.DM[j, i] = 1.0 if d < 1.5 else 999.
 
 
-    def calculate_score(self):
+    def evaluate(self, edges):
         """
-        calculate network score based on the redistributed demand (self.R)
+        Takes edges list as input,  
+        returns (demsat, nwcosts, robustness)
         """
-        self.s = 0.0
-        for _k in range(self.K):
-            if key_score == 's0':
-                _s = sum(self.R[_k]**2)
-                # self.s += np.sqrt(sum(self.R[_k]**2))
-            elif key_score == 'sm':
-                m = np.mean(self.R[_k])
-                _s = sum((self.R[_k] - m)**2)
+        # rob_type = ['edge', 'node'][0]
+        e_dict = self.__get_active_edges(edges) if rob_active else self.__get_dict_edges(edges)
+        nodes_a = self.__get_active_nodes(e_dict) if rob_active else list(range(self.N))
 
-            if key_snrom == 'sq':
-                _s = np.sqrt(_s)
-            elif key_snrom == 'dn':
-                _s = _s / self.N
+        demsat = self.calc_demand_satisfaction(e_dict)
+        # print(f'Demand satisfaction = {demsat:.2f}')
 
-            self.s += _s
+        nwcosts = self.calc_network_costs(edges)
+        # print(f'Network costs = {nwcosts:.2f}')
 
-
-    def calc_redistributed_demand(self, D):
-        """
-        calculate the network score base on the redistributed demand (self.R)
-        """
-        if D is None:
-            D = self.D
-
-        self.R = np.array(self.D, dtype=float)
-
-        for _k in range(self.K):
-            Dk = D[_k]
-            senders = np.where(Dk > 0)[0]
-
-            if key_distalg == 'p2n':
-                receivers = np.where(Dk < 0)[0]
-            elif key_distalg == 'p2a':
-                receivers = list(range(self.N))
-
-            for i in senders:
-                for j in receivers:
-                    v = self.A[i, j] * Dk[i]
-                    self.R[_k, i] -= v
-                    self.R[_k, j] += v
+        if rob_type == 'edge':
+            robust = self.calc_robustness_edge(e_dict)
+        elif rob_type == 'node':
+            robust = self.calc_robustness_node(e_dict, nodes_a)
+        # print(f'Robustness = {robust:.2f}')
+        return demsat, nwcosts, robust
 
 
-    def calculate_robustness_old(self, D=None):
-        if D is None:
-            D = self.D
-
-        n_rob = 0
-        s_init = self.s
-        for i, j in self.edges:
-            row = np.array(self.A[i])
-
-            self.A[i, j] = 0
-            if key_robust == 'rp' and np.sum(self.A[i]) > 0:
-                self.A[i] = self.A[i] / np.sum(self.A[i])
-            self.calc_redistributed_demand(D)
-            self.calculate_score()
-            s_rob = self.s
-
-            self.A[i] = row
-            rate = (s_rob - s_init) / s_init
-            if rate <= self.r_threshold:
-                n_rob += 1
-
-        self.r = n_rob / len(self.edges)
-        # print(f'Classical robustness r={self.r:.4f}\n\n')
+    def __get_dict_edges(self, edges):
+        e_dict = {}
+        for (u, v) in edges:
+            if not u in e_dict:
+                e_dict[u] = set()
+            e_dict[u].add(v)
+        return e_dict
 
 
-    def calculate_robustness(self):
-        n_rob = 0
-        R_init = np.array(self.R)
-        s_init = self.s
+    def __get_active_edges(self, edges):
+        e_dic_out = {}
+        e_dic_in = {}
+        for (u, v) in edges:
+            if not u in e_dic_out:
+                e_dic_out[u] = set()
+            e_dic_out[u].add(v)
 
-        for i, j in self.edges:
-            active_edge = False
-            for _k in range(self.K):
-                if self.D[_k, i] > 0 and (self.D[_k, j] < 0 or key_distalg == 'p2a'):
-                    active_edge = True
-                    v = self.A[i, j] * self.D[_k, i]
-                    self.R[_k, i] += v
-                    self.R[_k, j] -= v
+            if not v in e_dic_in:
+                e_dic_in[v] = set()
+            e_dic_in[v].add(u)
 
-            if active_edge:
-                self.calculate_score()
-                self.R = np.array(R_init)
-                if (self.s - s_init) / s_init <= self.r_threshold:
-                    n_rob += 1
-            else:
-                n_rob += 1
+        e_downstream = set()
+        visited = set()
+        q = queue.Queue()
+        for (suppliers, demanders) in self.products:
+            for node in suppliers:
+                q.put(node)
+        while not q.empty():
+            u = q.get()
+            visited.add(u)
+            if not u in e_dic_out:
+                continue
+            for v in e_dic_out[u]:
+                e_downstream.add((u,v))
+                if not v in visited:
+                    q.put(v)
 
-            R_init = np.array(self.R)
+        e_upstream = set()
+        visited = set()
+        q = queue.Queue()
+        for (suppliers, demanders) in self.products:
+            for node in demanders:
+                q.put(node)
+        while not q.empty():
+            v = q.get()
+            visited.add(v)
+            if not v in e_dic_in:
+                continue
+            for u in e_dic_in[v]:
+                e_upstream.add((u,v))
+                if not u in visited:
+                    q.put(u)
 
-        self.R = np.array(R_init)
-        self.s = s_init
+        e_active = {}
+        for (u, v) in e_downstream & e_upstream:
+            if not u in e_active:
+                e_active[u] = set() 
+            e_active[u].add(v)
 
-        self.r = n_rob / len(self.edges)
+        return e_active
+        # return e_active, sorted(e_downstream, key=lambda x: (x[0], x[1])), sorted(e_upstream, key=lambda x: (x[0], x[1]))
 
 
-    def calculate_NPR_robustness(self, D=None):
-        """
-        Modification of the robustness definition.
-        Instead of defining the robustness as the percentage of links, 
-        whose removal yields acceptable score decrease (s_1 - s_0 < rt * s_0; rt=1%-10%),
-        the non-parametric robustness is the average score of the network obtained via the links removal compared to the initial score.
-        """
-        if D is None:
-            D = self.D
+    def __get_active_nodes(self, e_dict):
+        nodes_a = set()
+        q = queue.Queue()
+        for (suppliers, _) in self.products:
+            for s in suppliers:
+                q.put(s)
+
+            while not q.empty():
+                u = q.get()
+                nodes_a.add(u)
+
+                if u in e_dict:
+                    for v in e_dict[u]:
+                        if not v in nodes_a:
+                            q.put(v)
+
+        return nodes_a
+
+
+    def calc_demand_satisfaction(self, e_dict):
+        n_demanded = 0
+        n_satisfied = 0
+        for (suppliers, demanders) in self.products:
+            visited = set()
+            q = queue.Queue()
+            for node in suppliers:
+                q.put(node)
+
+            while not q.empty():
+                u = q.get()
+                visited.add(u)
+                if not u in e_dict:
+                    continue
+
+                for v in e_dict[u]:
+                    if not v in visited:
+                        q.put(v)
+            
+            n_demanded += len(demanders)
+            n_satisfied += len(set(demanders) & visited)
         
-        self.r = 0.0
-        s_init = self.s
-        n_edge = np.sum(self.A > 0)
-
-        for i, j in self.edges:
-            a_ij = self.A[i, j]
-            self.A[i, j] = 0
-            if key_robust == 'rp' and np.sum(self.A[i]) > 0:
-                self.A[i] = self.A[i] / np.sum(self.A[i])
-            self.calc_redistributed_demand(D)
-            self.calculate_score()
-
-            self.r += self.s
-
-            self.A[i, j] = a_ij
-
-        self.s = s_init
-        self.r = self.r / s_init / n_edge - 1.0
+        return n_satisfied / n_demanded
 
 
-    def mutate(self):
-        non_zero_rows = []
-        for i in range(self.N):
-            idx = np.where(self.A[i] > 0)[0]
-            if len(idx) > 1:
-                non_zero_rows.append(i)
+    def calc_network_costs(self, edges):
+        nwcosts = 0.0
+        for (u, v) in edges:
+            nwcosts += self.DM[u, v]
+        return nwcosts
 
-        if non_zero_rows == []:
-            mut_type = 'rand_row'
-            i = np.random.randint(0, self.N)
-        else:
-            mut_type = np.random.choice(['rand_row', 'exch_val', 'make_0', 'swap_val'], p=[0.25, 0.25, 0.25, 0.25])
-            i = np.random.choice(non_zero_rows)
 
-        if mut_type == 'rand_row':
-            row = np.random.randint(0, 100, size=self.N)
-            row[i] = 0
-            row = row / sum(row)
-            # print(row)
-            self.A[i] = row
+    def calc_robustness_edge(self, e_dict):
+        n_rob = 0
+        n_tot = 0
+        for u in e_dict:
+            for v in e_dict[u]:
+                e_dict[u].remove(v)
+                ds = self.calc_demand_satisfaction(e_dict)
+                e_dict[u].add(v)
+                n_rob += 1 if ds >= th else 0
+                n_tot += 1
 
-        elif mut_type == 'exch_val':
-            idx = np.where(self.A[i] > 0.01)[0]
-            j_gives = np.random.choice(idx)
-            h = (0.01 + 0.99 * np.random.random()) * self.A[i, j_gives]
-            self.A[i, j_gives] -= h
+        return n_rob / n_tot if n_tot > 0 else 0.0
 
-            # Probability to add the substracted value to another element in the row, thus keeping the row sum unchanged.
-            # Potentially, an error here. The sum of a row can become zero.
-            p_send = np.random.random()
-            if p_send < 0.7:
-                j_gets = np.random.choice([x for x in range(self.N) if not x in [j_gives, i]])
-                self.A[i, j_gets]  += h
 
-        elif mut_type == 'swap_val':
-            j1, j2 = np.random.choice([x for x in range(self.N) if x != i], size=2, replace=False)
-            self.A[i, j1], self.A[i, j2] = self.A[i, j2], self.A[i, j1]
-
-        elif mut_type == 'make_0':
-            idx = np.where(self.A[i] > 0)[0]
-            if len(idx) <= 1:
-                print(f'mutation {mut_type} at row {i} failed. Not enough non-zero values.')
+    def calc_robustness_node(self, e_dict, nodes_a):
+        n_rob = 0
+        for x in nodes_a:
+            if not x in e_dict:
+                n_rob += 1
             else:
-                j = np.random.choice(idx)
-                self.A[i,j] = 0
+                out = e_dict[x]
+                e_dict.pop(x)
+                ds = self.calc_demand_satisfaction(e_dict)
+                n_rob += 1 if ds >= th else 0
+                e_dict[x] = out
+        return n_rob / len(nodes_a)
+
+
+    def plot_network(self, edges=None, fpath='network.png'):
+        p_types = self.products[0]
+        sup = p_types[0]
+        dem = p_types[1]
+        other = set(range(self.N)) - (set(sup) | set(dem))
+
+        G = nx.DiGraph()
+        G.add_nodes_from(range(self.N))
+        pos = {i: (self.x[i], self.y[i]) for i in range(self.N)}
+
+        fig, ax = plt.subplots(figsize=(10, 10))
+
+        nx.draw_networkx_nodes(G, pos, node_size=200, nodelist=sup, node_color='C2')
+        nx.draw_networkx_nodes(G, pos, node_size=200, nodelist=dem, node_color='C3')
+        nx.draw_networkx_nodes(G, pos, node_size=200, nodelist=other, node_color='gray')
+
+        lab_dict = nx.draw_networkx_labels(G, pos, font_size=10)
+        for _, txt in lab_dict.items():
+            txt.set_path_effects([path_effects.Stroke(linewidth=1.5, foreground='white', alpha=0.6), path_effects.Normal()])
+
+        if not edges is None:
+            G.add_edges_from(edges)
+            nx.draw_networkx_edges(G, pos, node_size=200, width=2, edge_color='black', arrowstyle='->', arrowsize=10)
+
+        # plt.xlim((-0.5, 10.5))
+        # plt.ylim((-0.5, 10.5))
+        plt.savefig(fpath, bbox_inches = 'tight', pad_inches=0.1, dpi=400)
+        plt.close()
+        # plt.show()
+
+
+    def save_setup(self, fpath='nw_setup.txt'):
+        with codecs.open(fpath, 'w') as fout:
+            fout.write(f'Nodes: {self.N}\n')
+            for i in range(self.N):
+                fout.write(f'{i:3d} {self.x[i]:9.6f} {self.y[i]:9.6f}\n')
+
+            fout.write(f'Products: {len(self.products)}\n')
+            for k in range(len(self.products)):
+                fout.write(' '.join(map(str, self.products[k][0])) + '\n')
+                fout.write(' '.join(map(str, self.products[k][1])) + '\n')
+    
+
+    def load_setup(self, fpath):
+        with codecs.open(fpath, 'r') as fin:
+            self.N = int(fin.readline()[6:])
+            self.x = np.zeros(self.N)
+            self.y = np.zeros(self.N)
+            for i in range(self.N):
+                vals = fin.readline().split()
+                self.x[i] = float(vals[1])
+                self.y[i] = float(vals[2])
+
+            K = int(fin.readline()[10:])
+            self.products = []
+            for k in range(K):
+                sup = fin.readline().split()
+                dem = fin.readline().split()
+                self.products.append((set(map(int, sup)), set(map(int, dem))))
+
+        self.__calc_DM()
+
+
+
+class EdgeFactory:
+    def __init__(self, N):
+        self.N = N
+        self.M_min = 1
+        self.M_max = 3*N
+        # self.M_max = N * (N-1) >> 1
+
+
+    def generate_random(self, m=None):
+        # TODO
+        # Can be inefficient for larger m
+        # Why not sample m edges from all possible? Masking in adjacency matrix.
+        if m is None:
+            m = rng.integers(self.M_min, self.M_max)
+
+        edges = []
+        while len(edges) < m:
+            u = rng.integers(0, self.N)
+            v = rng.integers(0, self.N)
+            if u != v and not (u,v) in edges:
+                edges.append((u,v))
+
+        return sorted(edges, key=lambda x: (x[0], x[1]))
+
+
+    def generate_random_smart(self, products, m=None):
+        # Modified version that should increase the number of successful networks
+        if m is None:
+            m = rng.integers(self.M_min, self.M_max)
+
+        edges = []
+        sup, dem = set(), set()
+        for (s, d) in products:
+            sup |= s
+            dem |= d
+
+        for u in sup:
+            v = rng.integers(0, self.N)
+            while u == v:
+                v = rng.integers(0, self.N)
+            edges.append((u,v))
+
+        for v in dem:
+            u = rng.integers(0, self.N)
+            while u == v or (u,v) in edges:
+                u = rng.integers(0, self.N)
+            edges.append((u,v))
+
+        while len(edges) < m:
+            u = rng.integers(0, self.N)
+            v = rng.integers(0, self.N)
+            if u != v and not (u,v) in edges:
+                edges.append((u,v))
+
+        return sorted(edges, key=lambda x: (x[0], x[1]))
+
+
+    def mutate(self, edges):
+        edges = list(edges)
+
+        mut_type = rng.choice(['del_edges', 'add_edges', 'replace', 'rewire'], p=[0.3, 0.3, 0.3, 0.1])
+        m = len(edges)
+
+        if mut_type == 'del_edges' and m <= self.M_min:
+            mut_type = 'add_edges'
+        elif mut_type == 'add_edges' and m >= self.M_max:
+            mut_type = 'del_edges'
+
+        if mut_type == 'del_edges':
+            m_del = rng.integers(1, (m - self.M_min + 1))
+            edges = rng.choice(edges, m-m_del, replace=False)
+            edges = [tuple(x) for x in edges]
+
+        elif mut_type == 'add_edges':
+            m_add = rng.integers(1, (self.M_max - m + 1))
+            while len(edges) < m + m_add:
+                u = rng.integers(0, self.N)
+                v = rng.integers(0, self.N)
+                if u != v and not (u,v) in edges:
+                    edges.append((u,v))
+
+        elif mut_type == 'replace':
+            m_replace = rng.integers(1, m >> 1)
+            edges = [tuple(x) for x in rng.choice(edges, m-m_replace, replace=False)]
+            while len(edges) < m:
+                u = rng.integers(0, self.N)
+                v = rng.integers(0, self.N)
+                if u != v and not (u,v) in edges:
+                    edges.append((u,v))
+
+
+        elif mut_type == 'rewire':
+            # 100 attempts to rewire two edges
+            for _ in range(100):
+                i1 = rng.integers(0, m)
+                i2 = rng.integers(0, m)
+                if i1 == i2:
+                    continue
                 
-                # Probability to normalize the row, thus making its sum == 1
-                p_normalize = np.random.random()
-                if p_normalize < 0.5:
-                    self.A[i] = self.A[i] / sum(self.A[i])
+                a = edges[i1]
+                b = edges[i2]
 
-        self.evaluate()
+                if a[0] == b[0] or a[1] == b[1] or a[0] == b[1] or b[0] == a[1]:
+                    # print('fail 1')
+                    continue
+                elif (a[0], b[1]) in edges or (b[0], a[1]) in edges:
+                    # print('fail 2')
+                    continue
+                else:
+                    # print('Success!!')
+                    edges.remove(a)
+                    edges.remove(b)
+                    edges.append((a[0], b[1]))
+                    edges.append((b[0], a[1]))
+                    break
 
-
-    def recombine(self, other):
-        res = self.copy()
-
-        # number of rows in the res that will be taken from [other.A] 1, ..., N/2
-        n_replace = np.random.randint(1, self.N // 2 + 1)
-        row_id = np.random.choice([j for j in range(self.N)], n_replace, replace=False)
-
-        for i in row_id:
-            res.A[i] = other.A[i]
-        res.evaluate()
-
-        return res
+        return sorted(edges, key=lambda x: (x[0], x[1]))
 
 
-    def copy(self):
-        nw_out = TranspNetwork(self.N, self.D)
-        nw_out.A = np.array(self.A)
-        nw_out.r = self.r
-        nw_out.r_threshold = self.r_threshold
-        nw_out.edges = set(self.edges)
-
-        nw_out.evaluate()
-        return nw_out
+    def recombine(self, edges_a, edges_b):
+        edges_all = list(set(edges_a + edges_b))
+        m = rng.integers(self.M_min, min(self.M_max, len(edges_all)))
+        edges = random.sample(edges_all, m)
+        return sorted(edges, key=lambda x: (x[0], x[1]))
 
 
-    def compare_networks(self, other):
-        # return np.sum(np.abs(self.A - other.A))
-        return np.max(np.abs(self.A - other.A))
+    def add_edges(self, edges, m):
+        assert(len(edges) + m <= self.N * (self.N - 1) and m > 0)
+
+        while m > 0:
+            u = rng.integers(0, self.N)
+            v = rng.integers(0, self.N)
+            if u != v and not (u,v) in edges:
+                edges.append((u,v))
+                m -= 1
+        return sorted(edges, key=lambda x: (x[0], x[1]))
+
+
+    def read_edges(self, fpath):
+        edges = []
+        with codecs.open(fpath, 'r') as fin:
+            for line in fin:
+                vals = line.split()
+                edges.append((int(vals[0]), int(vals[1])))
+        return edges
+
+
+
+class Network:
+    def __init__(self, edges):
+        self.edges = edges
+        self.ds = self.nc = self.r = -1.0
+    
+
+    def evaluate(self, setup):
+        self.ds, self.nc, self.r = setup.evaluate(self.edges)
+
+
+    def reduce_network(self, setup):
+        # print(self.edges)
+        # print(self)
+        edges_new = sorted(self.edges, key=lambda x: setup.DM[x[0], x[1]], reverse=True)
+        i = 0
+        while i < len(edges_new):
+            ds, nc, r = setup.evaluate(edges_new[:i] + edges_new[i+1:])
+
+            if ds >= self.ds and r >= self.r:
+            # if ds >= th and r >= self.r:
+                edges_new = edges_new[:i] + edges_new[i+1:]
+            else:
+                i += 1
+        self.edges = sorted(edges_new, key=lambda x: (x[0], x[1]))
+        self.evaluate(setup)
 
 
     def __eq__(self, other):
-        return self.compare_networks(other) < 0.02
-
-
-    def __ne__(self, other):
-        return not self.__eq__(other)
-
+        return sorted(self.edges, key=lambda x: (x[0], x[1]))  == sorted(other.edges, key=lambda x: (x[0], x[1]))
+    
 
     def __str__(self):
-        return f'\nA:\n{self.A}\nscore = {self.s:.2f}, robustness = {self.r}'
+        return f'({self.ds:.2f}, {self.nc:.2f}, {self.r:.2f})'
 
 
     def __repr__(self):
-        return f'({self.s:.1f}, {self.r:.3f})'
+        return self.__str__()
 
 
-    def save_edges(self, fpath='network.edges'):
-        with codecs.open(fpath, 'w') as fout:
-            for i, j in self.edges:
-                fout.write(f'{i+1}\t{j+1}\t1\n')
-
-
-    def save_network(self, fpath='network.netw'):
-        rob = '' if self.r is None else f', robustness={self.r:.5f}, rob_setup={key_robust}'
-        header = f'# score={self.s:.4f}, opt_setup={key_distalg}-{key_score}_{key_snrom}{rob}\n'
-
-        with codecs.open(fpath, 'w') as fout:
-            fout.write(header)
-            fout.write(f'# adjacency matrix A, M={len(self.edges)}, N={self.N}\n')
-            for row in self.A:
-                line = ' '.join(['%8.6f'%x for x in row])
-                fout.write(line + '\n')
-
-            fout.write(f'# demand pattern D, K={self.K}\n')
-            for row in self.D:
-                line = ' '.join(['%8.4f'%x for x in row])
-                fout.write(line + '\n')
-
-
-    def draw_inventories(self, path='inventories/'):
-        if not os.path.exists(path):
-            os.makedirs(path)
-
-        for _k in range(self.K):
-            _, ax = plt.subplots(figsize=(8, 6))
-            ax.set_title(f'k={_k}, mean={np.mean(self.D[_k]):.2f}')
-            ax.bar([i for i in range(self.N)], self.D[_k], color='#fff2c9', lw=1.0, ec='#e89c0e', hatch='...', zorder=0)
-            ax.bar([i for i in range(self.N)], self.R[_k], color='#c9dbff', lw=1.0, ec='#4b61a6', hatch='//', zorder=1)
-
-            ax.set_xlabel('node id')
-            ax.set_ylabel('demand level')
-            ax.grid(alpha = 0.4, linestyle = '--', linewidth = 0.2, color = 'black', zorder=0)
-
-            # plt.show()
-            plt.savefig(path + f'd={_k:02d}.png', dpi=400, bbox_inches = 'tight')
-            plt.close()
-
-
-    def draw_network_graphviz(self, path='networks/', draw_all=False):
-        if not os.path.exists(path):
-            os.makedirs(path)
-
-        graphviz_path = 'C:/Program Files (x86)/Graphviz/bin/dot.exe' if system() == 'Windows' else 'dot'
-
-        fname = 'nw_general'
-        with codecs.open(path + '%s.dot'%fname, 'w') as fout:
-            fout.write('strict digraph {\n')
-            fout.write('\tgraph [splines="spline"];\n')
-            fout.write('\tnode [fixedsize=true, fontname=helvetica, fontsize=10, label="\\N", shape=circle, style=solid];\n')
-            for i in range(self.N):
-                fout.write(f'\t{i}\t\t[label="{i}"; width=1.0]\n')
-            for i, j in self.edges:
-                w = 0.4 + 2.0 * self.A[i,j]
-                fout.write(f'\t{i} -> {j}\t\t[penwidth={w:.3f}]\n')
-            fout.write('}')
-        arguments = [graphviz_path, '-Tpng', '%s.dot'%(path + fname), '-o', '%s.png'%(path + fname)]
-        run(args=arguments)
-
-        if not draw_all:
-            return
-         
-        for _k in range(self.K):
-            fname = f'nw-{_k:02d}'
-            with codecs.open(path + '%s.dot'%fname, 'w') as fout:
-                fout.write('strict digraph {\n')
-                fout.write('\tgraph [splines="spline"];\n')
-                fout.write('\tnode [fixedsize=true, fontname=helvetica, fontsize=10, label="\\N", shape=circle, style=solid];\n')
-                active = []
-                for i in range(self.N):
-                    color = '#df8a8a'
-                    if self.D[_k, i] >= 0:
-                        active.append(i)
-                        color = '#b2df8a'
-                    fout.write(f'\t{i}\t\t[label="{i}"; width=1.0; "style"= "filled"; "fillcolor"="{color}"]\n')
-                for i, j in self.edges:
-                    if i in active:
-                        if self.D[_k, j] < 0 or key_distalg == 'p2a':
-                            w = 0.4 + 2.0 * self.A[i,j]
-                            fout.write(f'\t{i} -> {j}\t\t[penwidth={w:.3f}]\n')
-
-                fout.write('}')
-            arguments = [graphviz_path, '-Tpng', '%s.dot'%(path + fname), '-o', '%s.png'%(path + fname)]
-            run(args=arguments)
-
-
-
-
-def heuristic_annealing_optimization(N, K, n_seeds, n_runs=1, r_direction='max'):
-    def better_r(nw_a, nw_b):
-        if r_direction == 'max':
-            return nw_a.r > nw_b.r
-        else:
-             return nw_a.r < nw_b.r
-
-    G_s = 8000
-    G_r = 20000
-    ds_margin = 0.1
-    r_threshold = 0.01
+class GeneticAlgorithm:
+    gen_prop = {
+        'Recombined': 0.25,
+        'Mutated': 0.70,
+        'Random': 0.05}
     
-    path = f'res-opt/heuristic_annealing/N={N}-K={K}-s={key_distalg}_{key_score}_{key_snrom}-rt={r_threshold:.2f}-{r_direction}/'
+    def __init__(self, N, x, y, products, path, G_max=151, G_size=250, G_save=25):
+        self.G_max = G_max 
+        self.G_size = G_size
+        self.G_save = G_save
 
-    if not os.path.exists(path):
-        os.makedirs(path)
-    print('Heuristic annealing optimization\n', path)
+        self.setup = NetworkSetup(N, x, y, products)
+        self.EFACT = EdgeFactory(N)
 
-
-    for i_seed in range(n_seeds):
-        print('\nNew demand seed;', i_seed)
-        np.random.seed(i_seed)
-        D = np.random.randint(-50, 50, size=(K, N))
-		
-        for i_run in range(n_runs):
-            if n_runs > 1:
-                print('\n   new run;', i_run)
-                path_run = path + f'seed={i_seed:02d}-run={i_run:02d}/'
-            else:
-                path_run = path + f'seed={i_seed:02d}/'
-
-            if not os.path.exists(path_run):
-                os.makedirs(path_run)
-
-            NW = TranspNetwork(N, D)
-            NW.r_threshold = r_threshold
-
-            nw_all = {'score': [], 'robustness': []}
-            nw_best = {'score': [], 'robustness': []}
-            for i in range(G_s):
-                NW_x = NW.copy()
-                NW_x.mutate()
-                NW_x.calculate_robustness()
-                nw_all['score'].append(NW_x.s)
-                nw_all['robustness'].append(NW_x.r)
-                if NW_x.s < NW.s:
-                    NW = NW_x
-                    nw_best['score'].append(NW.s)
-                    nw_best['robustness'].append(NW.r)
-
-                if i % 500 == 0:
-                    print(f'({i}, {NW.s:.4f})', end=' ', flush=True)
-            print()
-
-            s_min = NW.s
-            NW.save_network(path_run + f'Gs={G_s:05d}-best_s.netw')
-            NW.save_edges(path_run + f'Gs={G_s:05d}-best_s.edges')
-            print(f'Best score: {s_min:.2f}, robustness: {NW.r:.4f}')
-
-            nw_r_all = {'score': [], 'robustness': []}
-            nw_r_best = {'score': [NW.s], 'robustness': [NW.r]}
-            for i in range(G_r):
-                NW_x = NW.copy()
-                NW_x.mutate()
-                NW_x.calculate_robustness()
-                nw_r_all['score'].append(NW_x.s)
-                nw_r_all['robustness'].append(NW_x.r)
-                if (NW_x.r == NW.r and NW_x.s < NW.s) or \
-                    (better_r(NW_x, NW) and NW_x.s < s_min * (1 + ds_margin)):
-                    # robustness the same but score is higher, or robustness is better and score is acceptable
-                        NW = NW_x
-                        nw_r_best['score'].append(NW.s)
-                        nw_r_best['robustness'].append(NW.r)
-                if i % 500 == 0:
-                    print(f'({i}, {NW.s:.4f}, {NW.r:.4f})', end=' ', flush=True)
-
-            _, ax = plt.subplots(figsize=(8,6))
-            plt.plot(nw_best['score'], nw_best['robustness'], 'o-', ms=2, color='C1', alpha=0.7, label='score best')
-            plt.scatter(nw_all['score'], nw_all['robustness'], s=5, facecolors='none', edgecolors='C0', alpha=0.4, label='score all')
-
-            plt.plot(nw_r_best['score'], nw_r_best['robustness'], 'o-', ms=2, color='C3', alpha=0.7, label='robust best')
-            plt.scatter(nw_r_all['score'], nw_r_all['robustness'], s=5, facecolors='none', edgecolors='C2', alpha=0.4, label='robust all')
-
-            plt.title(f'Heuristic annealing robustness {r_direction}imization\n' + \
-                        f'N={N}, K={K}, rt={r_threshold:.3f}, Δs={100*ds_margin:.3f}\n' + \
-                        f'Gs={G_s}, Gr={G_r}')
-            ax.set_xlabel('score')
-            ax.set_ylabel('robustness')
-            ax.legend(loc='lower right')
-            ax.grid(alpha = 0.4, linestyle = '--', linewidth = 0.2, color = 'black')
-            plt.savefig(path_run + f'opt_conv-Gs={G_s:05d}-Gr={G_r:05d}.png', bbox_inches = 'tight', pad_inches=0.1, dpi=400)
-            # plt.show()
-            plt.close()
-
-            print(f'Robustness optimization finished!\nFinal score: {NW.s:.2f}, robustness: {NW.r:.4f}')
-            NW.save_network(path_run + f'Gr={G_r:05d}-best_r.netw')
-            NW.save_edges(path_run + f'Gr={G_r:05d}-best_r.edges')
+        self.path = path
+        if not os.path.exists(self.path):
+            os.makedirs(self.path)
+        self.setup.save_setup(self.path + 'setup.txt')
+        print('Genetic algorithm optimization\n', self.path)
 
 
+    def optimize(self):
+        # Creating G_0
+        self.make_G0()
+        print(f'Start optimization:\n(0; {len(self.pareto)}; {self.nc_min:.4e})', end=', ', flush=True)
+        self.__plot_front(0, [], [], [])
+        for i_G in range(1, self.G_max):
+            self.make_new_generation(i_G)
+            print(f'({i_G}; {len(self.pareto)}; {self.nc_min:.4e})', end=', ', flush=True)
 
 
-def simulated_annealing_optimization(N, K, n_seeds, n_runs, r_direction='max'):
-    G = 20001
-    r_threshold = 0.01
-    sigma = 0.05
+    def make_G0(self):
+        # population is a list of Network() objects
+        self.population = []
+        while len(self.population) < self.G_size:
+            # edges = self.EFACT.generate_random()
+            edges = self.EFACT.generate_random_smart(self.setup.products)
+            nw = Network(edges)
+            nw.evaluate(self.setup)
 
-    def better_r(rob_a, rob_b):
-        if r_direction == 'max':
-            return rob_a >= rob_b
-        else:
-             return rob_a <= rob_b
-
-    def draw_convergence(nw_all, nw_best, i, NW):
-            _, ax = plt.subplots(figsize=(8,6))
-            plt.plot(nw_best['score'][-200:], nw_best['robustness'][-200:], '-', lw=0.4, color='C3', alpha=0.8, label='track')
-            plt.scatter(nw_all['score'], nw_all['robustness'], s=5, facecolors='none', edgecolors='C0', alpha=0.4, label='all')
-            plt.scatter(NW.s, NW.r, s=25, color='C3', alpha=1.0, label='best', zorder=3)
-
-            plt.title(f'Simulated annealing robustness {r_direction}imization\n' + \
-                        f'N={N}, K={K}, rt={r_threshold:.3f}, σ={sigma}\nG={i}')
-            ax.set_xlabel('score')
-            ax.set_ylabel('robustness')
-            ax.legend(loc='lower right')
-            ax.grid(alpha = 0.4, linestyle = '--', linewidth = 0.2, color = 'black')
-            plt.savefig(path_run + f'opt_conv-G={i:05d}.png', bbox_inches = 'tight', pad_inches=0.1, dpi=400)
-            # plt.show()
-            plt.close()
+            # if nw.ds >= th and (not nw in self.population):
+            if nw.ds >= 1.0 and (not nw in self.population):
+                self.population.append(nw)
+        
+        self.__get_ranks()
+        self.__get_pareto()
+        self.__get_parents()
 
     
-    path = f'res-opt/simulated_annealing/N={N}-K={K}-s={key_distalg}_{key_score}_{key_snrom}-rt={r_threshold:.2f}-{r_direction}/'
+    def make_new_generation(self, i_G):
+        # pool is a list of Network() objects
+        pool = [self.population[i] for i in self.parents + self.pareto]
 
-    if not os.path.exists(path):
-        os.makedirs(path)
-    print('Simulated annealing optimization\n', path)
+        G_rec = []
+        while len(G_rec) < int(self.G_size * self.gen_prop['Recombined']):
+            nw1, nw2 = rng.choice(pool, 2, replace=False)
+            e_new = self.EFACT.recombine(nw1.edges, nw2.edges)
+            nw_new = Network(e_new)
+            nw_new.evaluate(self.setup)
+            # if nw_new.ds >= th and (not nw_new in pool + G_rec):
+            if nw_new.ds >= 1.0 and (not nw_new in pool + G_rec):
+                G_rec.append(nw_new)
 
+        G_mut = []
+        while len(G_mut) < int(self.G_size * self.gen_prop['Mutated']):
+            nw = rng.choice(pool)
+            e_new = self.EFACT.mutate(nw.edges)
+            nw_new = Network(e_new)
+            nw_new.evaluate(self.setup)
+            # if nw_new.ds >= th and (not nw_new in pool + G_rec + G_mut):
+            if nw_new.ds >= 1.0 and (not nw_new in pool + G_rec + G_mut):
+                G_mut.append(nw_new)
 
-    for i_seed in range(n_seeds):
-        print('\nNew demand seed;', i_seed)
-        np.random.seed(i_seed)
-        D = np.random.randint(-50, 50, size=(K, N))
-		
-        for i_run in range(n_runs):
-            if n_runs > 1:
-                print('\n   new run;', i_run)
-                path_run = path + f'seed={i_seed:02d}-run={i_run:02d}/'
-            else:
-                path_run = path + f'seed={i_seed:02d}/'
+        G_rnd = []
+        while len(G_rnd) < int(self.G_size * self.gen_prop['Random']):
+            # e_new = self.EFACT.generate_random()
+            e_new = self.EFACT.generate_random_smart(self.setup.products)
+            nw_new = Network(e_new)
+            nw_new.evaluate(self.setup)
+            # if nw_new.ds >= th and (not nw_new in pool + G_rec + G_mut):
+            if nw_new.ds >= 1.0 and (not nw_new in pool + G_rec + G_mut):
+                G_rnd.append(nw_new)
 
-            if not os.path.exists(path_run):
-                os.makedirs(path_run)
-
-            NW = TranspNetwork(N, D)
-            NW.calculate_robustness()
-            NW.r_threshold = r_threshold
-
-            nw_all = {'score': [], 'robustness': []}
-            nw_best = {'score': [], 'robustness': []}
-            for i in range(G):
-                NW_1 = NW.copy()
-                NW_1.mutate()
-                NW_1.calculate_robustness()
-                nw_all['score'].append(NW_1.s)
-                nw_all['robustness'].append(NW_1.r)
-
-                s, s1 = NW.s, NW_1.s
-                r, r1 = NW.r, NW_1.r
-
-                if s1 <= s and better_r(r1, r):
-                    NW = NW_1
-                    nw_best['score'].append(s1)
-                    nw_best['robustness'].append(r1)
-                elif s1 <= s and not better_r(r1, r):
-                    # T = G * sigma / i;  p = e**(-1 / T)
-                    prob = np.exp(-i / G / sigma)
-                    # print(f'Worse robustness, p = {prob:.5f}')
-                    if np.random.random() <= prob:
-                        # print('--accepted!')
-                        NW = NW_1
-                        nw_best['score'].append(NW.s)
-                        nw_best['robustness'].append(NW.r)
-                elif better_r(r1, r) and s1 > s:
-                    prob = np.exp(-i / G / sigma) / 4
-                    prob_s = 10 ** (-2 * (s1 - s) / (s1 + s) / sigma)
-                    # print(f'Worse score, p = {prob:.5f}, ps = {prob_s:.5}, total = {prob * prob_s:.5}')
-                    if np.random.random() <= prob * prob_s:
-                        # print('--accepted!')
-                        NW = NW_1
-                        nw_best['score'].append(NW.s)
-                        nw_best['robustness'].append(NW.r)
-                else:
-                    prob = np.exp(-i / G / sigma) / 5
-                    prob_s = 10 ** (-2 * (s1 - s) / (s1 + s) / sigma)
-                    # print(f'Both worse, p = {prob:.5f}, ps = {prob_s:.5}, total = {prob * prob_s:.5}')
-                    if np.random.random() <= prob * prob_s:
-                        # print('--accepted!')
-                        NW = NW_1
-                        nw_best['score'].append(NW.s)
-                        nw_best['robustness'].append(NW.r)
-
-                if i > 0 and i % 2000 == 0:
-                    print(f'({i}, {NW.s:.4f}, {len(NW.edges)})', end=' ', flush=True)
-                    NW.save_network(path_run + f'G={i:05d}.netw')
-                    NW.save_edges(path_run + f'G={i:05d}.edges')
-                    draw_convergence(nw_all, nw_best, i, NW)
-
-
-
-
-class Pareto:
-    def optimization(self, N, K, n_seeds, n_runs):
-        G_max = 100001
-        r_threshold = 0.10
-
-        path = f'res-opt/pareto/N={N}-K={K}-s={key_distalg}_{key_score}_{key_snrom}-rt={r_threshold:.4f}-elim={key_edgelim}/'
-        if not os.path.exists(path):
-            os.makedirs(path)
-        print('Pareto optimization\n', path)
-
-        for i_seed in range(n_seeds):
-            print('\nNew demand seed;', i_seed)
-            np.random.seed(i_seed)
-            D = np.random.randint(-50, 50, size=(K, N))
-                        
-            for i_run in range(n_runs):
-                if n_runs > 1:
-                    print('\n   new run;', i_run)
-                    self.path_run = path + f'seed={i_seed:02d}-run={i_run:02d}/'
-                else:
-                    self.path_run = path + f'seed={i_seed:02d}/'
-                if not os.path.exists(self.path_run):
-                    os.makedirs(self.path_run)
-
-                NW = TranspNetwork(N, D)
-                NW.r_threshold = r_threshold
-                NW.calculate_robustness()
-
-                self.nw_all = {'score': [NW.s], 'robustness': [NW.r]}
-                self.pareto_best = [NW]
-                self.pareto_hr = []
-                self.pareto_lr = []
-                self.min_s = NW.s
-                self.max_r = NW.r
-                self.min_r = NW.r
-
-                for i in range(G_max):
-                    nw_mut = self.__get_random_nw()
-                    nw_mut.mutate()
-                    nw_mut.calculate_robustness()
-                    self.nw_all['score'].append(nw_mut.s)
-                    self.nw_all['robustness'].append(nw_mut.r)
-
-                    if nw_mut.s < self.min_s:
-                        # print('Case 0. Replace pareto_best')
-                        self.min_s = nw_mut.s
-                        self.max_r = nw_mut.r
-                        self.min_r = nw_mut.r
-                        
-                        elems_to_place = self.pareto_best + self.pareto_hr + self.pareto_lr
-                        elems_to_place.sort(key = lambda x: x.s)
-                        self.pareto_best = [nw_mut]
-                        self.pareto_hr = []
-                        self.pareto_lr = []
-
-                    else:
-                        elems_to_place = [nw_mut]
-
-                    for _nw in elems_to_place:
-                        self.__place_elem(_nw)
-
-                    if i > 0 and i % 10000 == 0:
-                        print(f'({i}, {self.min_s:.3f}, {self.min_r:.4f}, {self.max_r:.4f})', end=' ', flush=True)
-                        print()
-                        self.__plot_convergence(N, K, r_threshold, i)
-
-                    if i > 0 and i % 20000 == 0:
-                        self.__save_optimal(i)
-
-
-    def __get_random_nw(self):
-        pareto_ranged = [[] for _ in range(10)]
-        for _nw in self.pareto_best + self.pareto_hr + self.pareto_lr:
-            j = int(_nw.r*10) if _nw.r < 1.0 else 9
-            pareto_ranged[j].append(_nw)
-        non_zero_ranges = [j for j in range(10) if len(pareto_ranged[j]) > 0]
-
-        r_idx = np.random.choice(non_zero_ranges)
-        return np.random.choice(pareto_ranged[r_idx]).copy()
-
-
-    def __place_elem(self, nw_mut):
-        assert(nw_mut.s >= self.min_s)
-
-        if nw_mut.s == self.min_s:
-            # print('Case 1. Extend pareto_best')
-            for nw in self.pareto_best:
-                if nw.r == nw_mut.r:
+        self.population = []
+        for nw in pool + G_rec + G_mut + G_rnd:
+            for nw_picked in self.population:
+                # if nw == nw_picked:
+                if nw == nw_picked or (abs(nw.nc - nw_picked.nc) < 1e-6 and abs(nw.r - nw_picked.r) < 1e-6):
                     break
             else:
-                self.pareto_best.append(nw_mut)
+                self.population.append(nw)
 
-            if nw_mut.r > self.max_r:
-                self.max_r = nw_mut.r
-                # remove such networks from [high robustness pareto] that have robustness lower than (nw_mut.r)
-                self.pareto_hr = [_nw for _nw in self.pareto_hr if _nw.r > self.max_r]
-            elif nw_mut.r < self.min_r:
-                self.min_r = nw_mut.r
-                # remove such networks from [low robustness pareto] that have robustness higher than (nw_mut.r)
-                self.pareto_lr = [_nw for _nw in self.pareto_lr if _nw.r < self.min_r]
-
-        elif nw_mut.r > self.max_r:
-            # print('Case 2. Update pareto_HR')
-            # Check if the mutated network will fit to the existing pareto HR
-            self.__add_to_HR(nw_mut)
-
-        elif nw_mut.r < self.min_r:
-            # print('Case 3. Update pareto_LR')
-            # Check if the mutated network will fit to the existing pareto LR
-            self.__add_to_LR(nw_mut)
-
-
-    def __add_to_HR(self, nw_mut):
-        for _nw in self.pareto_hr:
-            if nw_mut.s >= _nw.s and nw_mut.r <= _nw.r:
-                break
-        else:
-            self.pareto_hr = [_nw for _nw in self.pareto_hr if (_nw.r > nw_mut.r or _nw.s < nw_mut.s)]
-            self.pareto_hr.append(nw_mut)    
-
-
-    def __add_to_LR(self, nw_mut):
-        for _nw in self.pareto_lr:
-            if nw_mut.s >= _nw.s and nw_mut.r >= _nw.r:
-                break
-        else:
-            self.pareto_lr = [_nw for _nw in self.pareto_lr if (_nw.r < nw_mut.r or _nw.s < nw_mut.s)]
-            self.pareto_lr.append(nw_mut)
-
-
-    def __plot_convergence(self, N, K, r_threshold, i):
-        _, ax = plt.subplots(figsize=(8,6))
-        plt.scatter(self.nw_all['score'], self.nw_all['robustness'], s=2, edgecolors='C0', alpha=0.4, label='all')
+        self.__get_ranks()
+        self.__get_pareto()
+        self.__get_parents()
         
-        self.pareto_best.sort(key = lambda x: x.r)
-        plt.plot([x.s for x in self.pareto_best], [x.r for x in self.pareto_best], 'o-', ms=4, color='C3', alpha=0.7, label='pareto best')
+        # if i_G % 5 == 0:
 
-        self.pareto_hr.sort(key = lambda x: x.r)
-        plt.plot([x.s for x in self.pareto_hr], [x.r for x in self.pareto_hr], 'o-', ms=4, color='C1', alpha=0.7, label='pareto HR')
 
-        self.pareto_lr.sort(key = lambda x: x.r)
-        plt.plot([x.s for x in self.pareto_lr], [x.r for x in self.pareto_lr], 'o-', ms=4, color='C2', alpha=0.7, label='pareto LR')
+        if i_G % self.G_save == 0:
+            # for i in self.pareto:
+            #     # nw = self.population[i].reduce_network(self.setup)
+            #     print(i, len(self.population[i].edges))
+            self.__save_optimal(i_G, plot=(i_G == (self.G_max-1)))
+            self.__plot_front(i_G, G_rec, G_mut, G_rnd)
 
-        plt.title(f'Pareto optimization N={N}, K={K}, rt={r_threshold:.4f}\nG={i:05d}')
+
+    def __get_ranks(self):
+        N_pop = len(self.population)
+        nc_min = self.population[0].nc
+        r_min = r_max = self.population[0].r
+
+        bs = [0]
+        for i in range(N_pop):
+            if self.population[i].nc < nc_min:
+                nc_min = self.population[i].nc
+                r_min = r_max = self.population[i].r
+                bs = [i]
+            elif self.population[i].nc == nc_min:
+                bs.append(i)
+                r_min = min(self.population[i].r, r_min)
+                r_max = max(self.population[i].r, r_min)
+        r_m = 0.5 * (r_min + r_max)
+
+        self.G_ranks = {i: 0 for i in bs}
+        for i in range(N_pop):
+            if i in self.G_ranks:
+                continue
+            i_nc = self.population[i].nc
+            i_r = self.population[i].r
+            _rk = 0
+            for j in range(N_pop):
+                j_nc = self.population[j].nc
+                j_r = self.population[j].r
+                if j_nc == i_nc and j_r == i_r:
+                    continue
+                elif ((i_r <= r_m and j_r <= i_r) or (i_r > r_m and j_r >= i_r)) and j_nc <= i_nc:
+                    # j has better r and better s
+                    _rk += 1
+            self.G_ranks[i] = _rk
+
+        self.nc_min = nc_min
+
+
+    def __get_pareto(self):
+        self.pareto = [i for i, rk in self.G_ranks.items() if rk == 0]
+        self.pareto.sort(key = lambda i: self.population[i].r)
+
+
+    def __get_parents(self):
+        self.parents = []
+        for i, rk in sorted(self.G_ranks.items(), key=lambda x: x[1]):
+            if rk == 0:
+                # these are in pareto
+                continue
+            
+            for j in self.parents:
+                if self.population[i] == self.population[j]:
+                    break
+            else:
+                self.parents.append(i)
+            if len(self.parents) > 0.3 * self.G_size:
+                break
+        
+        self.parents.sort(key = lambda i: self.population[i].r)
+
+
+    def __save_optimal(self, i_G, plot=False):
+        save_path = self.path + f'G_{i_G:05d}/'
+        if not os.path.exists(save_path):
+            os.makedirs(save_path)
+
+        overview = '# i, nc, r\n'
+        for j, idx in enumerate(self.pareto):
+            nw = self.population[idx]
+            save_edges(nw.edges, save_path + f'i={j:04d}.edges')
+
+            overview += f'{j},{nw.nc:.6f},{nw.r:.6f}\n'
+
+            if plot:
+                self.setup.plot_network(nw.edges, save_path + f'i={j:04d}.png')
+
+
+        codecs.open(save_path + 'overview.txt', 'w').write(overview)
+
+
+    def __plot_front(self, i_G, G_rec, G_mut, G_rnd):
+        _par_nc = [self.population[i].nc for i in self.pareto]
+        nc_min = min(_par_nc)
+        nc_max = max(_par_nc)
+        ds = nc_max - nc_min
+
+        _, ax = plt.subplots(figsize=(8,6))
+        plt.plot([self.population[i].nc for i in self.pareto], [self.population[i].r for i in self.pareto], 'o-', ms=4, color='black', alpha=0.7, label='pareto')
+        if i_G == 0:
+            plt.scatter([nw.nc for nw in self.population], [nw.r for nw in self.population], 15, 'C0', 'o', edgecolors='None', alpha=0.5, label='previous population')
+
+        plt.scatter([self.population[i].nc for i in self.parents], [self.population[i].r for i in self.parents], 15, 'C2', '^', edgecolors='None', alpha=0.5, label='parents')
+        plt.plot([nw.nc for nw in G_rec], [nw.r for nw in G_rec], 'o', ms=4, color='C1', alpha=0.5, label='recombined')
+        plt.plot([nw.nc for nw in G_mut], [nw.r for nw in G_mut], 'x', ms=4, color='C3', alpha=0.5, label='mutated')
+        plt.plot([nw.nc for nw in G_rnd], [nw.r for nw in G_rnd], 'd', ms=4, color='C4', alpha=0.5, label='random')
+        plt.title(f'GA optimization; N={self.setup.N}; rt={th:.2f},\nG={i_G:03d}, G_size={self.G_size}')
         ax.set_xlabel('score')
         ax.set_ylabel('robustness')
         ax.legend(loc='best')
+        ax.set_xlim(nc_min - 0.1 * ds, nc_max + 0.2 * ds)
         ax.grid(alpha = 0.4, linestyle = '--', linewidth = 0.2, color = 'black')
-        max_s = max(self.pareto_best + self.pareto_hr + self.pareto_lr, key = lambda x: x.s).s
-        ds = (max_s - self.min_s)
-        plt.xlim((self.min_s - 0.05*ds, max_s + 0.05*ds))
-
-        plt.savefig(self.path_run + f'opt_conv-G={i:6d}.png', bbox_inches = 'tight', pad_inches=0.1, dpi=400)
+        plt.savefig(self.path + f'opt_conv-G={i_G:04d}.png', bbox_inches = 'tight', pad_inches=0.1, dpi=400)
         plt.close()
+        # plt.show()
 
 
-    def __save_optimal(self, i):
-        j = 0
-        for _nw in sorted(self.pareto_lr + self.pareto_best + self.pareto_hr, key=lambda x: x.r):
-            save_path = self.path_run + f'G_{i:05d}/'
-            if not os.path.exists(save_path):
-                os.makedirs(save_path)
 
-            _nw.save_network(save_path + f'i={j:04d}.netw')
-            _nw.save_edges(save_path + f'i={j:04d}.edges')
-            j += 1
+
+
+def save_edges(edges, fpath='nw_edges.txt'):
+    with codecs.open(fpath, 'w') as fout:
+        for u, v in edges:
+            fout.write(f'{u} {v} 1\n')
+
+
+
+
+def stretch_coordinates(x, y):
+    dist = lambda x1, y1, x2, y2: np.sqrt((x1 - x2)**2 + (y1 - y2)**2)
+
+    dmin = 1.0
+    N = len(x)
+    for _ in range(50):
+        for i in range(N):
+            for j in range(i+1,N):
+                # print(i, j)
+                d = dist(x[i], y[i], x[j], y[j])
+                if d < 1e-6:
+                    x[i] += 0.01
+                    y[i] += 0.01
+                    d = dist(x[i], y[i], x[j], y[j])
+                elif d < dmin:
+                    dx = x[j] - x[i]
+                    dy = y[j] - y[i]
+                    
+                    x[i] = x[i] - 0.5 * dmin * dx / d
+                    y[i] = y[i] - 0.5 * dmin * dy / d
+
+                    x[j] = x[j] + 0.5 * dmin * dx / d
+                    y[j] = y[j] + 0.5 * dmin * dy / d
+
+class MST_solver:
+    def __init__(self, setup):
+        self.setup = setup
+
+
+    def solve(self):
+        terminals = list(setup.products[0][1])
+        edges, d = self.__solve_once(terminals)
+
+        # Post-solving with an extra node
+        improved = False
+        k_max = self.setup.N - len(terminals) - 1
+        for k in range(k_max): 
+            x_best = -1
+            for x in range(self.setup.N):
+                if not x in [0] + terminals:
+                    _e, _d = self.__solve_once([x] + terminals)
+
+                    if _d < d:
+                        x_best = x
+                        edges = _e
+                        d = _d
+                        improved = True
+
+            if improved:
+                terminals.append(x_best)
+                improved = False
+            else:
+                break    
+        
+        return edges
+
+
+
+    def __solve_once(self, terminals):
+        chosen = [0]
+        remain = list(terminals)
+        edges = []
+        total_d = 0
+        while len(remain) > 0:
+            best_u = chosen[0]
+            best_v = remain[0]
+            d = self.setup.DM[best_u, best_v]
+            for u in chosen:
+                for v in remain:
+                    if self.setup.DM[u,v] < d:
+                        best_u = u
+                        best_v = v
+                        d = self.setup.DM[u,v]
+            
+            chosen.append(best_v)
+            remain.remove(best_v)
+            edges.append((best_u, best_v))
+            total_d += d
+        return edges, total_d
+
 
 
 
 
 if __name__ == '__main__':
-    N = 10
-    K = 1
-    Pareto().optimization(N, K, n_seeds=1, n_runs=1)
-    # heuristic_annealing_optimization(N, K, 1, 1, 'min')
-    # simulated_annealing_optimization(N, K, n_seeds=1, n_runs=1, r_direction='min')
+    N, K = 20, 1
+    products = [(set([0]), set(range(N//2,N)))]
 
+    for i_seed in range(1):
+        rng = default_rng(i_seed)
+        # Variation of node positions
+        x = rng.uniform(0.0, 10.0, N)
+        y = rng.uniform(0.0, 10.0, N)
+        stretch_coordinates(x, y)
 
-    # # Tests with a single Transportation Network
-    # np.random.seed(0)
-    # D = np.random.randint(-50, 50, size=(K, N))
-    # NW = TranspNetwork(N, D)
-    # NW.r_threshold = 0.01
-    # NW.calculate_robustness()
-    # print(NW)
+        # path = f'res-GA-opt/N={N}-rt={th:.2f}-test_pos/seed={i_seed:03d}/'
 
+        # optimizer = GeneticAlgorithm(N, x, y, products, path)
+        # optimizer.optimize()
 
+        setup = NetworkSetup(N, x, y, products)
+        # EFACT = EdgeFactory(N)
+        # edges = EFACT.generate_random_smart(products)
 
+        # MST = MST_solver(setup)
+        # edges = MST.solve()
 
+        edges = [(0,x) for x in range(N//2,N)]
 
-
-
-
-
-
-
+        ds, nc, r = setup.evaluate(edges)
+        print(f'{ds:.2f}, {nc:.2f}, {r:.3f}')
+        setup.plot_network(edges, 'network.png')
 
 
 
