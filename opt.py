@@ -2,20 +2,33 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patheffects as path_effects
 import networkx as nx
-from subprocess import run, DEVNULL
-from platform import system
 import os, codecs, random, scipy, queue
 
-from numpy.random import default_rng
-rng = default_rng(0)
+from subprocess import run, DEVNULL
+from platform import system
+from scipy.stats import pearsonr
+
+rng = np.random.default_rng(0)
 
 np.set_printoptions(precision=2, suppress=True)
 
 
 th = 1.0
 
-rob_type = ['edge', 'node'][1]
+y_key = ['edge robustness', 'node robustness', 'motifs score', 'zs corr'][3]
 rob_active = True
+
+zs_target = [-0.5,-0.5,-0.1,-0.5,-0.6,0.0,1.0,0.0,0.2,0.3,0.0,0.0,0.0]
+
+def _y(nw):
+    if y_key == 'node robustness':
+        return nw.r_n
+    elif y_key == 'motifs score':
+        return nw.ms
+    elif y_key == 'zs corr':
+        return nw.zs_c
+    else:
+        return nw.r_e
 
 
 class NetworkSetup:
@@ -52,9 +65,8 @@ class NetworkSetup:
         Takes edges list as input,  
         returns (demsat, nwcosts, robustness)
         """
-        # rob_type = ['edge', 'node'][0]
         e_dict = self.__get_active_edges(edges) if rob_active else self.__get_dict_edges(edges)
-        nodes_a = self.__get_active_nodes(e_dict) if rob_active else list(range(self.N))
+        nodes_a = self.__get_active_nodes(e_dict)
 
         demsat = self.calc_demand_satisfaction(e_dict)
         # print(f'Demand satisfaction = {demsat:.2f}')
@@ -62,12 +74,10 @@ class NetworkSetup:
         nwcosts = self.calc_network_costs(edges)
         # print(f'Network costs = {nwcosts:.2f}')
 
-        if rob_type == 'edge':
-            robust = self.calc_robustness_edge(e_dict)
-        elif rob_type == 'node':
-            robust = self.calc_robustness_node(e_dict, nodes_a)
+        rob_edge = self.calc_robustness_edge(e_dict)
+        rob_node = self.calc_robustness_node(e_dict, nodes_a)
         # print(f'Robustness = {robust:.2f}')
-        return demsat, nwcosts, robust
+        return demsat, nwcosts, rob_edge, rob_node
 
 
     def __get_dict_edges(self, edges):
@@ -277,9 +287,10 @@ class NetworkSetup:
 
 
 class EdgeFactory:
-    def __init__(self, N):
+    def __init__(self, N, basic_edges):
         self.N = N
-        self.M_min = 1
+        self.basic_edges = basic_edges
+        self.M_min = len(basic_edges) + 1
         self.M_max = 3*N
         # self.M_max = N * (N-1) >> 1
 
@@ -291,7 +302,7 @@ class EdgeFactory:
         if m is None:
             m = rng.integers(self.M_min, self.M_max)
 
-        edges = []
+        edges = list(self.basic_edges)
         while len(edges) < m:
             u = rng.integers(0, self.N)
             v = rng.integers(0, self.N)
@@ -306,11 +317,18 @@ class EdgeFactory:
         if m is None:
             m = rng.integers(self.M_min, self.M_max)
 
-        edges = []
+        edges = list(self.basic_edges)
         sup, dem = set(), set()
         for (s, d) in products:
             sup |= s
             dem |= d
+
+        # add-on not to add extra basic edges in the next two cycles
+        for (u,v) in edges:
+            if u in sup:
+                sup.remove(u)
+            if v in dem:
+                dem.remove(v)
 
         for u in sup:
             v = rng.integers(0, self.N)
@@ -334,19 +352,18 @@ class EdgeFactory:
 
 
     def mutate(self, edges):
-        edges = list(edges)
+        edges = list(set(edges) - set(self.basic_edges))
+        m = len(edges) + len(self.basic_edges)
 
         mut_type = rng.choice(['del_edges', 'add_edges', 'replace'], p=[0.33, 0.33, 0.34])
-        m = len(edges)
-
-        if mut_type == 'del_edges' and m <= self.M_min:
+        if mut_type in ['del_edges', 'replace'] and len(edges) <= 1:
             mut_type = 'add_edges'
         elif mut_type == 'add_edges' and m >= self.M_max:
             mut_type = 'del_edges'
 
         if mut_type == 'del_edges':
             m_del = rng.integers(1, (m - self.M_min + 1))
-            edges = rng.choice(edges, m-m_del, replace=False)
+            edges = rng.choice(edges, len(edges)-m_del, replace=False)
             edges = [tuple(x) for x in edges]
 
         elif mut_type == 'add_edges':
@@ -354,30 +371,36 @@ class EdgeFactory:
             while len(edges) < m + m_add:
                 u = rng.integers(0, self.N)
                 v = rng.integers(0, self.N)
-                if u != v and not (u,v) in edges:
+                if u != v and not (u,v) in edges + self.basic_edges:
                     edges.append((u,v))
 
         elif mut_type == 'replace':
-            m_replace = rng.integers(1, m >> 1)
+            m = len(edges)
+            # print(m, flush=True)
+            m_replace = rng.integers(1, m >> 1) if m > 3 else 1
             edges = [tuple(x) for x in rng.choice(edges, m-m_replace, replace=False)]
             while len(edges) < m:
                 u = rng.integers(0, self.N)
                 v = rng.integers(0, self.N)
-                if u != v and not (u,v) in edges:
+                if u != v and not (u,v) in edges + self.basic_edges:
                     edges.append((u,v))
 
-        return sorted(edges, key=lambda x: (x[0], x[1]))
-
+        return list(self.basic_edges) + sorted(edges, key=lambda x: (x[0], x[1]))
 
 
     def recombine(self, edges_a, edges_b):
-        edges_all = list(set(edges_a + edges_b))
-        m = rng.integers(self.M_min, min(self.M_max, len(edges_all)))
+        e1 = list(set(edges_a) - set(self.basic_edges))
+        e2 = list(set(edges_b) - set(self.basic_edges))
+        edges_all = list(set(e1 + e2))
+        if len(edges_all) == 1:
+            return list(self.basic_edges) + edges_all
+
+        m = rng.integers(1, min(self.M_max-len(self.basic_edges), len(edges_all)))
         edges = random.sample(edges_all, m)
-        return sorted(edges, key=lambda x: (x[0], x[1]))
+        return list(self.basic_edges) + sorted(edges, key=lambda x: (x[0], x[1]))
 
 
-    def add_edges(self, edges, m):
+    def extend_edges(self, edges, m):
         assert(len(edges) + m <= self.N * (self.N - 1) and m > 0)
 
         while m > 0:
@@ -390,32 +413,33 @@ class EdgeFactory:
 
 
 
-
 class Network:
     def __init__(self, edges):
         self.edges = edges
-        self.ds = self.nc = self.r = -1.0
+        self.ds = self.nc = self.r_e = self.r_n = -1.0
+        self.ms, self.zs_c = 0.0, 0.0
     
 
     def evaluate(self, setup):
-        self.ds, self.nc, self.r = setup.evaluate(self.edges)
+        self.ds, self.nc, self.r_e, self.r_n = setup.evaluate(self.edges)
 
 
-    def reduce_network(self, setup):
-        # print(self.edges)
-        # print(self)
-        edges_new = sorted(self.edges, key=lambda x: setup.DM[x[0], x[1]], reverse=True)
-        i = 0
-        while i < len(edges_new):
-            ds, nc, r = setup.evaluate(edges_new[:i] + edges_new[i+1:])
+    def evaluate_ms(self):
+        zscores = mfinder_calc_zscores(self.edges)
+        self.ms = MS_6_13(zscores)
+        np.nan_to_num(zscores,copy=False)
+        try:
+            corr, p = pearsonr(zscores, zs_target)
+            self.zs_c = corr
+        except:
+            self.zs_c = 0.0
+        return zscores
 
-            if ds >= self.ds and r >= self.r:
-            # if ds >= th and r >= self.r:
-                edges_new = edges_new[:i] + edges_new[i+1:]
-            else:
-                i += 1
-        self.edges = sorted(edges_new, key=lambda x: (x[0], x[1]))
-        self.evaluate(setup)
+    def is_close(self, other):
+        if y_key == 'motifs score':
+            return (abs(self.nc - other.nc) < 1e-6 and abs(self.ms - other.ms) < 0.05)
+        else:
+            return (abs(self.nc - other.nc) < 1e-6 and abs(_y(self) - _y(other)) < 1e-6)
 
 
     def __eq__(self, other):
@@ -423,12 +447,13 @@ class Network:
     
 
     def __str__(self):
-        return f'({self.ds:.2f}, {self.nc:.2f}, {self.r:.2f})'
+        return f'({self.ds:.2f}, {self.nc:.2f}, {self.r_e:.2f}, {self.r_n:.2f}, {self.ms:.2f}, {self.zs_c:.2f})'
 
 
     def __repr__(self):
         return self.__str__()
 
+        
 
 class GeneticAlgorithm:
     gen_prop = {
@@ -436,13 +461,16 @@ class GeneticAlgorithm:
         'Mutated': 0.70,
         'Random': 0.05}
     
-    def __init__(self, N, x, y, products, path, G_max=151, G_size=250, G_save=25):
+
+    # def __init__(self, N, x, y, products, path, G_max=151, G_size=250, G_save=25):
+    def __init__(self, basic_edges, setup, path, G_max=151, G_size=250, G_save=25):
         self.G_max = G_max 
         self.G_size = G_size
         self.G_save = G_save
 
-        self.setup = NetworkSetup(N, x, y, products)
-        self.EFACT = EdgeFactory(N)
+        # self.setup = NetworkSetup(N, x, y, products)
+        self.setup = setup
+        self.EFACT = EdgeFactory(setup.N, basic_edges)
 
         self.path = path
         if not os.path.exists(self.path):
@@ -465,15 +493,16 @@ class GeneticAlgorithm:
         # population is a list of Network() objects
         self.population = []
         while len(self.population) < self.G_size:
-            # edges = self.EFACT.generate_random()
-            edges = self.EFACT.generate_random_smart(self.setup.products)
+            edges = self.EFACT.generate_random()
+            # edges = self.EFACT.generate_random_smart(self.setup.products)
             nw = Network(edges)
             nw.evaluate(self.setup)
 
-            # if nw.ds >= th and (not nw in self.population):
             if nw.ds >= 1.0 and (not nw in self.population):
+                nw.evaluate_ms()
                 self.population.append(nw)
-        
+
+
         self.__get_ranks()
         self.__get_pareto()
         self.__get_parents()
@@ -491,6 +520,7 @@ class GeneticAlgorithm:
             nw_new.evaluate(self.setup)
             # if nw_new.ds >= th and (not nw_new in pool + G_rec):
             if nw_new.ds >= 1.0 and (not nw_new in pool + G_rec):
+                nw_new.evaluate_ms()
                 G_rec.append(nw_new)
 
         G_mut = []
@@ -501,6 +531,7 @@ class GeneticAlgorithm:
             nw_new.evaluate(self.setup)
             # if nw_new.ds >= th and (not nw_new in pool + G_rec + G_mut):
             if nw_new.ds >= 1.0 and (not nw_new in pool + G_rec + G_mut):
+                nw_new.evaluate_ms()
                 G_mut.append(nw_new)
 
         G_rnd = []
@@ -511,13 +542,14 @@ class GeneticAlgorithm:
             nw_new.evaluate(self.setup)
             # if nw_new.ds >= th and (not nw_new in pool + G_rec + G_mut):
             if nw_new.ds >= 1.0 and (not nw_new in pool + G_rec + G_mut):
+                nw_new.evaluate_ms()
                 G_rnd.append(nw_new)
 
         self.population = []
         for nw in pool + G_rec + G_mut + G_rnd:
             for nw_picked in self.population:
                 # if nw == nw_picked:
-                if nw == nw_picked or (abs(nw.nc - nw_picked.nc) < 1e-6 and abs(nw.r - nw_picked.r) < 1e-6):
+                if nw == nw_picked or nw.is_close(nw_picked):
                     break
             else:
                 self.population.append(nw)
@@ -526,8 +558,6 @@ class GeneticAlgorithm:
         self.__get_pareto()
         self.__get_parents()
         
-        # if i_G % 5 == 0:
-
 
         if i_G % self.G_save == 0:
             # for i in self.pareto:
@@ -540,33 +570,33 @@ class GeneticAlgorithm:
     def __get_ranks(self):
         N_pop = len(self.population)
         nc_min = self.population[0].nc
-        r_min = r_max = self.population[0].r
+        y_min = y_max = _y(self.population[0])
 
         bs = [0]
         for i in range(N_pop):
             if self.population[i].nc < nc_min:
                 nc_min = self.population[i].nc
-                r_min = r_max = self.population[i].r
+                y_min = y_max = _y(self.population[i])
                 bs = [i]
             elif self.population[i].nc == nc_min:
                 bs.append(i)
-                r_min = min(self.population[i].r, r_min)
-                r_max = max(self.population[i].r, r_min)
-        r_m = 0.5 * (r_min + r_max)
+                y_min = min(_y(self.population[i]), y_min)
+                y_max = max(_y(self.population[i]), y_max)
+        y_m = 0.5 * (y_min + y_max)
 
         self.G_ranks = {i: 0 for i in bs}
         for i in range(N_pop):
             if i in self.G_ranks:
                 continue
             i_nc = self.population[i].nc
-            i_r = self.population[i].r
+            i_y = _y(self.population[i])
             _rk = 0
             for j in range(N_pop):
                 j_nc = self.population[j].nc
-                j_r = self.population[j].r
-                if j_nc == i_nc and j_r == i_r:
+                j_y = _y(self.population[j])
+                if j_nc == i_nc and j_y == i_y:
                     continue
-                elif ((i_r <= r_m and j_r <= i_r) or (i_r > r_m and j_r >= i_r)) and j_nc <= i_nc:
+                elif ((i_y <= y_m and j_y <= i_y) or (i_y > y_m and j_y >= i_y)) and j_nc <= i_nc:
                     # j has better r and better s
                     _rk += 1
             self.G_ranks[i] = _rk
@@ -576,7 +606,7 @@ class GeneticAlgorithm:
 
     def __get_pareto(self):
         self.pareto = [i for i, rk in self.G_ranks.items() if rk == 0]
-        self.pareto.sort(key = lambda i: self.population[i].r)
+        self.pareto.sort(key = lambda i: _y(self.population[i]))
 
 
     def __get_parents(self):
@@ -594,7 +624,7 @@ class GeneticAlgorithm:
             if len(self.parents) > 0.3 * self.G_size:
                 break
         
-        self.parents.sort(key = lambda i: self.population[i].r)
+        self.parents.sort(key = lambda i: _y(self.population[i]))
 
 
     def __save_optimal(self, i_G, plot=False):
@@ -602,12 +632,12 @@ class GeneticAlgorithm:
         if not os.path.exists(save_path):
             os.makedirs(save_path)
 
-        overview = '# i, nc, r\n'
+        overview = '# i, nc, r_e, r_n, ms, zs_c\n'
         for j, idx in enumerate(self.pareto):
             nw = self.population[idx]
             save_edges(nw.edges, save_path + f'i={j:04d}.edges')
 
-            overview += f'{j},{nw.nc:.6f},{nw.r:.6f}\n'
+            overview += f'{j},{nw.nc:.6f},{nw.r_e:.6f},{nw.r_n:.6f},{nw.ms:.6f},{nw.zs_c:.6f}\n'
 
             if plot:
                 self.setup.plot_network(nw.edges, save_path + f'i={j:04d}.png')
@@ -623,23 +653,82 @@ class GeneticAlgorithm:
         ds = nc_max - nc_min
 
         _, ax = plt.subplots(figsize=(8,6))
-        plt.plot([self.population[i].nc for i in self.pareto], [self.population[i].r for i in self.pareto], 'o-', ms=4, color='black', alpha=0.7, label='pareto')
+        plt.plot([self.population[i].nc for i in self.pareto], [_y(self.population[i]) for i in self.pareto], 'o-', ms=4, color='black', alpha=0.7, label='pareto')
         if i_G == 0:
-            plt.scatter([nw.nc for nw in self.population], [nw.r for nw in self.population], 15, 'C0', 'o', edgecolors='None', alpha=0.5, label='previous population')
+            plt.scatter([nw.nc for nw in self.population], [_y(nw) for nw in self.population], 15, 'C0', 'o', edgecolors='None', alpha=0.5, label='previous population')
 
-        plt.scatter([self.population[i].nc for i in self.parents], [self.population[i].r for i in self.parents], 15, 'C2', '^', edgecolors='None', alpha=0.5, label='parents')
-        plt.plot([nw.nc for nw in G_rec], [nw.r for nw in G_rec], 'o', ms=4, color='C1', alpha=0.5, label='recombined')
-        plt.plot([nw.nc for nw in G_mut], [nw.r for nw in G_mut], 'x', ms=4, color='C3', alpha=0.5, label='mutated')
-        plt.plot([nw.nc for nw in G_rnd], [nw.r for nw in G_rnd], 'd', ms=4, color='C4', alpha=0.5, label='random')
+        plt.scatter([self.population[i].nc for i in self.parents], [_y(self.population[i]) for i in self.parents], 15, 'C2', '^', edgecolors='None', alpha=0.5, label='parents')
+        plt.plot([nw.nc for nw in G_rec], [_y(nw) for nw in G_rec], 'o', ms=4, color='C1', alpha=0.5, label='recombined')
+        plt.plot([nw.nc for nw in G_mut], [_y(nw) for nw in G_mut], 'x', ms=4, color='C3', alpha=0.5, label='mutated')
+        plt.plot([nw.nc for nw in G_rnd], [_y(nw) for nw in G_rnd], 'd', ms=4, color='C4', alpha=0.5, label='random')
         plt.title(f'GA optimization; N={self.setup.N}; rt={th:.2f},\nG={i_G:03d}, G_size={self.G_size}')
         ax.set_xlabel('score')
-        ax.set_ylabel('robustness')
+        ax.set_ylabel(y_key)
         ax.legend(loc='best')
         ax.set_xlim(nc_min - 0.1 * ds, nc_max + 0.2 * ds)
         ax.grid(alpha = 0.4, linestyle = '--', linewidth = 0.2, color = 'black')
         plt.savefig(self.path + f'opt_conv-G={i_G:04d}.png', bbox_inches = 'tight', pad_inches=0.1, dpi=400)
         plt.close()
         # plt.show()
+
+
+
+class MST_solver:
+    def __init__(self, setup):
+        self.setup = setup
+
+
+    def solve(self):
+        terminals = list(self.setup.products[0][1])
+        edges, d = self.__solve_once(terminals)
+
+        # Post-solving with an extra node
+        improved = False
+        k_max = self.setup.N - len(terminals) - 1
+        for k in range(k_max): 
+            x_best = -1
+            for x in range(self.setup.N):
+                if not x in [0] + terminals:
+                    _e, _d = self.__solve_once([x] + terminals)
+
+                    if _d < d:
+                        x_best = x
+                        edges = _e
+                        d = _d
+                        improved = True
+
+            if improved:
+                terminals.append(x_best)
+                improved = False
+            else:
+                break    
+        return sorted(edges, key=lambda x: (x[0], x[1]))
+
+
+
+    def __solve_once(self, terminals):
+        chosen = [0]
+        remain = list(terminals)
+        edges = []
+        total_d = 0
+        while len(remain) > 0:
+            best_u = chosen[0]
+            best_v = remain[0]
+            d = self.setup.DM[best_u, best_v]
+            for u in chosen:
+                for v in remain:
+                    if self.setup.DM[u,v] < d:
+                        best_u = u
+                        best_v = v
+                        d = self.setup.DM[u,v]
+            
+            chosen.append(best_v)
+            remain.remove(best_v)
+            edges.append((best_u, best_v))
+            total_d += d
+        return edges, total_d
+
+
 
 
 
@@ -684,62 +773,64 @@ def stretch_coordinates(x, y):
                     x[j] = x[j] + 0.5 * dmin * dx / d
                     y[j] = y[j] + 0.5 * dmin * dy / d
 
-class MST_solver:
-    def __init__(self, setup):
-        self.setup = setup
 
 
-    def solve(self):
-        terminals = list(setup.products[0][1])
-        edges, d = self.__solve_once(terminals)
+def mfinder_calc_zscores(edges):
+    """
+    result is a np.array(13), infinities (888888) are replaced with np.NaN
+    Other procedures (plotting, calculating mean, etc.) should be adjusted accordingly
+    """
+    with codecs.open('tmp_motifs/tmp.edges', 'w') as fout:
+        for u,v in edges:
+            fout.write(f'{u+1} {v+1} 1\n')
 
-        # Post-solving with an extra node
-        improved = False
-        k_max = self.setup.N - len(terminals) - 1
-        for k in range(k_max): 
-            x_best = -1
-            for x in range(self.setup.N):
-                if not x in [0] + terminals:
-                    _e, _d = self.__solve_once([x] + terminals)
+    run(f'tmp_motifs/mfinder1.2.exe tmp_motifs/tmp.edges -r 1000 -f tmp_motifs/tmp', stdout=DEVNULL)
 
-                    if _d < d:
-                        x_best = x
-                        edges = _e
-                        d = _d
-                        improved = True
+    id2x = {6: 0,  36: 1, 12: 2, 74: 3, 14: 4, 78: 5, 38: 6, 98: 7, 108: 8, 46: 9, 102: 10, 110: 11, 238: 12}
 
-            if improved:
-                terminals.append(x_best)
-                improved = False
-            else:
-                break    
+    with codecs.open('tmp_motifs/tmp_OUT.txt', 'r') as fin:
+        start = 'ID		STATS		ZSCORE	PVAL	[MILI]'
+        kk = len(start)
         
-        return edges
+        for line in fin:
+            if line[:kk] == start:
+                break
+        else:
+            print(f'Warning! no motifs information found!', flush=True)
+            return np.zeros(13)
+        
+        norm = 0.
+        zscores = np.zeros(13)
+        for _ in range(13):
+            line = fin.readline()
+            vals = line.split()
+            motif_id = int(vals[0])
+            if vals[3] != '888888':
+                zscores[id2x[motif_id]] = float(vals[3])
+                norm += float(vals[3])**2
+            else:
+                zscores[id2x[motif_id]] = np.NaN
+            line = fin.readline()
+
+    # norm = np.sqrt(norm) if norm > 1e-6 else 1.0
+    # zscores /= norm
+    return zscores
 
 
+def MS_6_13(zscores):
+    res = 0
+    xnan = np.isnan(zscores)
+    for i in range(13):
+        if not xnan[i]:
+            res += zscores[i] if i < 6 else -zscores[i]
+    return res
 
-    def __solve_once(self, terminals):
-        chosen = [0]
-        remain = list(terminals)
-        edges = []
-        total_d = 0
-        while len(remain) > 0:
-            best_u = chosen[0]
-            best_v = remain[0]
-            d = self.setup.DM[best_u, best_v]
-            for u in chosen:
-                for v in remain:
-                    if self.setup.DM[u,v] < d:
-                        best_u = u
-                        best_v = v
-                        d = self.setup.DM[u,v]
-            
-            chosen.append(best_v)
-            remain.remove(best_v)
-            edges.append((best_u, best_v))
-            total_d += d
-        return edges, total_d
 
+def MS_abs(zscores):
+    positive = np.nansum(zscores[:6]) >= 0
+
+    x = np.nansum(np.abs(zscores))
+    return x if positive else -x
 
 
 
@@ -749,29 +840,31 @@ if __name__ == '__main__':
     products = [(set([0]), set(range(N//2,N)))]
 
     for i_seed in range(1):
-        rng = default_rng(i_seed)
+        rng = np.random.default_rng(i_seed)
         # Variation of node positions
         x = rng.uniform(0.0, 10.0, N)
         y = rng.uniform(0.0, 10.0, N)
         stretch_coordinates(x, y)
 
-        # path = f'res-GA-opt/N={N}-rt={th:.2f}-test_pos/seed={i_seed:03d}/'
-
-        # optimizer = GeneticAlgorithm(N, x, y, products, path)
-        # optimizer.optimize()
-
         setup = NetworkSetup(N, x, y, products)
+
         # EFACT = EdgeFactory(N)
         # edges = EFACT.generate_random_smart(products)
 
-        # MST = MST_solver(setup)
-        # edges = MST.solve()
+        MST = MST_solver(setup)
+        edges = MST.solve()
 
-        edges = [(0,x) for x in range(N//2,N)]
+        # edges = [(0,x) for x in range(N//2,N)]
 
-        ds, nc, r = setup.evaluate(edges)
-        print(f'{ds:.2f}, {nc:.2f}, {r:.3f}')
-        setup.plot_network(edges, 'network.png')
+        NW = Network(edges)
+        NW.evaluate(setup)
+        NW.evaluate_ms()
+        print(NW)
+
+        path = f'results-ZS_c-base-N={N}/seed={i_seed:03d}/'
+
+        optimizer = GeneticAlgorithm(edges, setup, path, G_max=201, G_size=250, G_save=25)
+        optimizer.optimize()
 
 
 

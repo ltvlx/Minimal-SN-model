@@ -1,7 +1,9 @@
 # Project-specific
 res-*/
 _tests/
+tmp_motifs/
 tests.py
+run*.py
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
