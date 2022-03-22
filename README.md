@@ -1,6 +1,20 @@
 # SN-model  
-A minimal model of supply networks
+A minimal model of supply networks.  
 
+This repository serves as supplementary materials to the paper "Local topological features of robust supply networks".  
+All the results given in the paper can be reproduced using this model.
+
+For the model to function properly, it is essential to download the [mfinder software](https://www.weizmann.ac.il/mcb/UriAlon/download/network-motif-software), compile it for your system and put it into the 'tmp-motifs/mfinder' folder.
+
+
+
+## Changes in version 12:
+- removed motif score optimization goal function
+- added a function to generate a network based on a pool of allowed edges (important when there is a restriction on the edge length)
+- EdgeFactory now accepts M_min and M_max as parameters
+- reworked the mutation procedure to call basic function of adding edges from the allowed pool
+- simplified the procedure of computing motif z-scores with mfinder.
+- added a separate script to batch-run optimizations using computational clusters
 
 
 <details><summary>Changelog of undocumented changes since March 2020</summary>
