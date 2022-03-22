@@ -1,0 +1,10 @@
+python3 run.py 20  0  5 16 22 0 > log-a00.txt &
+python3 run.py 20  5 10 16 22 1 > log-a01.txt &
+python3 run.py 20 10 15 16 22 2 > log-a02.txt &
+python3 run.py 20 15 20 16 22 3 > log-a03.txt &
+python3 run.py 20 20 25 16 22 4 > log-a04.txt &
+python3 run.py 20 25 30 16 22 5 > log-a05.txt &
+python3 run.py 20 30 35 16 22 6 > log-a06.txt &
+python3 run.py 20 35 40 16 22 7 > log-a07.txt &
+python3 run.py 20 40 45 16 22 8 > log-a08.txt &
+python3 run.py 20 45 50 16 22 9 > log-a09.txt &

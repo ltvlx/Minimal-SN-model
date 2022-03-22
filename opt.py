@@ -2,29 +2,30 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patheffects as path_effects
 import networkx as nx
-import os, codecs, random, scipy, queue
+import os
+import codecs
+import random
+import queue
 
 from subprocess import run, DEVNULL
-from platform import system
 from scipy.stats import pearsonr
+from itertools import combinations
 
 rng = np.random.default_rng(0)
-
 np.set_printoptions(precision=2, suppress=True)
 
 
-th = 1.0
+ds_th = 1.0
 
-y_key = ['edge robustness', 'node robustness', 'motifs score', 'zs corr'][3]
-rob_active = True
+y_key = ['edge robustness', 'node robustness', 'zs corr'][2]
+rob_active = False
 
-zs_target = [-0.5,-0.5,-0.1,-0.5,-0.6,0.0,1.0,0.0,0.2,0.3,0.0,0.0,0.0]
+mfpath = 'tmp-motifs/'
+
 
 def _y(nw):
     if y_key == 'node robustness':
         return nw.r_n
-    elif y_key == 'motifs score':
-        return nw.ms
     elif y_key == 'zs corr':
         return nw.zs_c
     else:
@@ -43,10 +44,10 @@ class NetworkSetup:
         products - list of K ((suppliers), (demanders)) tuples with indexes of suppliers and demanders of  k-th product
         """
         self.N = N
+        self.N_dem = len(products[0][1])
         self.products = products
         self.x, self.y = x, y
         self.__calc_DM()
-
 
     def __calc_DM(self):
         self.DM = np.zeros((self.N, self.N))
@@ -59,45 +60,39 @@ class NetworkSetup:
                 # d = np.sqrt((self.x[i] - self.x[j])**2 + (self.y[i] - self.y[j])**2)
                 # self.DM[i, j] = self.DM[j, i] = 1.0 if d < 1.5 else 999.
 
-
     def evaluate(self, edges):
-        """
-        Takes edges list as input,  
-        returns (demsat, nwcosts, robustness)
-        """
-        e_dict = self.__get_active_edges(edges) if rob_active else self.__get_dict_edges(edges)
+        e_dict, M = self.__get_active_edges(edges) if rob_active else self.__get_dict_edges(edges)
         nodes_a = self.__get_active_nodes(e_dict)
 
-        demsat = self.calc_demand_satisfaction(e_dict)
+        demsat = self.calc_demand_satisfaction(e_dict) / self.N_dem
         # print(f'Demand satisfaction = {demsat:.2f}')
 
         nwcosts = self.calc_network_costs(edges)
         # print(f'Network costs = {nwcosts:.2f}')
 
-        rob_edge = self.calc_robustness_edge(e_dict)
-        rob_node = self.calc_robustness_node(e_dict, nodes_a)
+        rob_edge = self.calc_robustness_edge(e_dict, M, demsat)
+        rob_node = self.calc_robustness_node(e_dict, nodes_a, demsat)
         # print(f'Robustness = {robust:.2f}')
         return demsat, nwcosts, rob_edge, rob_node
 
-
     def __get_dict_edges(self, edges):
-        e_dict = {}
+        e_dict, M = {}, 0
         for (u, v) in edges:
-            if not u in e_dict:
+            if u not in e_dict:
                 e_dict[u] = set()
             e_dict[u].add(v)
-        return e_dict
-
+            M += 1
+        return e_dict, M
 
     def __get_active_edges(self, edges):
         e_dic_out = {}
         e_dic_in = {}
         for (u, v) in edges:
-            if not u in e_dic_out:
+            if u not in e_dic_out:
                 e_dic_out[u] = set()
             e_dic_out[u].add(v)
 
-            if not v in e_dic_in:
+            if v not in e_dic_in:
                 e_dic_in[v] = set()
             e_dic_in[v].add(u)
 
@@ -110,11 +105,11 @@ class NetworkSetup:
         while not q.empty():
             u = q.get()
             visited.add(u)
-            if not u in e_dic_out:
+            if u not in e_dic_out:
                 continue
             for v in e_dic_out[u]:
                 e_downstream.add((u,v))
-                if not v in visited:
+                if v not in visited:
                     q.put(v)
 
         e_upstream = set()
@@ -133,15 +128,15 @@ class NetworkSetup:
                 if not u in visited:
                     q.put(u)
 
-        e_active = {}
+        e_active, M = {}, 0
         for (u, v) in e_downstream & e_upstream:
             if not u in e_active:
                 e_active[u] = set() 
             e_active[u].add(v)
+            M += 1
 
-        return e_active
+        return e_active, M
         # return e_active, sorted(e_downstream, key=lambda x: (x[0], x[1])), sorted(e_upstream, key=lambda x: (x[0], x[1]))
-
 
     def __get_active_nodes(self, e_dict):
         nodes_a = set()
@@ -161,9 +156,7 @@ class NetworkSetup:
 
         return nodes_a
 
-
     def calc_demand_satisfaction(self, e_dict):
-        n_demanded = 0
         n_satisfied = 0
         for (suppliers, demanders) in self.products:
             visited = set()
@@ -181,11 +174,9 @@ class NetworkSetup:
                     if not v in visited:
                         q.put(v)
             
-            n_demanded += len(demanders)
             n_satisfied += len(set(demanders) & visited)
         
-        return n_satisfied / n_demanded
-
+        return n_satisfied
 
     def calc_network_costs(self, edges):
         nwcosts = 0.0
@@ -193,34 +184,30 @@ class NetworkSetup:
             nwcosts += self.DM[u, v]
         return nwcosts
 
-
-    def calc_robustness_edge(self, e_dict):
-        n_rob = 0
-        n_tot = 0
+    def calc_robustness_edge(self, e_dict, M, ds_base):
+        M_rob = 0
         for u in e_dict:
             for v in e_dict[u]:
                 e_dict[u].remove(v)
-                ds = self.calc_demand_satisfaction(e_dict)
+                ds_edge = self.calc_demand_satisfaction(e_dict) / self.N_dem
+                M_rob += 1 if ds_edge >= ds_base else 0
                 e_dict[u].add(v)
-                n_rob += 1 if ds >= th else 0
-                n_tot += 1
 
-        return n_rob / n_tot if n_tot > 0 else 0.0
+        robustness = M_rob / M if M > 0 else 0.0
+        return robustness
 
-
-    def calc_robustness_node(self, e_dict, nodes_a):
+    def calc_robustness_node(self, e_dict, nodes_a, ds_base):
         n_rob = 0
         for x in nodes_a:
-            if not x in e_dict:
+            if x not in e_dict:
                 n_rob += 1
             else:
                 out = e_dict[x]
                 e_dict.pop(x)
-                ds = self.calc_demand_satisfaction(e_dict)
-                n_rob += 1 if ds >= th else 0
+                ds_node = self.calc_demand_satisfaction(e_dict) / self.N_dem
+                n_rob += 1 if ds_node >= ds_base else 0
                 e_dict[x] = out
         return n_rob / len(nodes_a)
-
 
     def plot_network(self, edges=None, fpath='network.png'):
         p_types = self.products[0]
@@ -232,7 +219,7 @@ class NetworkSetup:
         G.add_nodes_from(range(self.N))
         pos = {i: (self.x[i], self.y[i]) for i in range(self.N)}
 
-        fig, ax = plt.subplots(figsize=(10, 10))
+        fig, ax = plt.subplots(figsize=(8, 8))
 
         nx.draw_networkx_nodes(G, pos, node_size=200, nodelist=sup, node_color='C2')
         nx.draw_networkx_nodes(G, pos, node_size=200, nodelist=dem, node_color='C3')
@@ -246,12 +233,8 @@ class NetworkSetup:
             G.add_edges_from(edges)
             nx.draw_networkx_edges(G, pos, node_size=200, width=2, edge_color='black', arrowstyle='->', arrowsize=10)
 
-        # plt.xlim((-0.5, 10.5))
-        # plt.ylim((-0.5, 10.5))
         plt.savefig(fpath, bbox_inches = 'tight', pad_inches=0.1, dpi=400)
         plt.close()
-        # plt.show()
-
 
     def save_setup(self, fpath='nw_setup.txt'):
         with codecs.open(fpath, 'w') as fout:
@@ -264,7 +247,6 @@ class NetworkSetup:
                 fout.write(' '.join(map(str, self.products[k][0])) + '\n')
                 fout.write(' '.join(map(str, self.products[k][1])) + '\n')
     
-
     def load_setup(self, fpath):
         with codecs.open(fpath, 'r') as fin:
             self.N = int(fin.readline()[6:])
@@ -281,135 +263,132 @@ class NetworkSetup:
                 sup = fin.readline().split()
                 dem = fin.readline().split()
                 self.products.append((set(map(int, sup)), set(map(int, dem))))
-
+            self.N_dem = len(self.products[0][1])
         self.__calc_DM()
+
+    def generate_allowed_edges(self, len_max=3.0):
+        edges = []
+        for i in range(self.N):
+            for j in range(self.N):
+                if self.DM[i,j] <= len_max and i != j:
+                    edges.append((i,j))
+
+        return edges
+
+    def get_connectivity_length(self):
+        visited = [0]
+        to_visit = [i for i in range(1, self.N)]
+        d_max = 0.0
+
+        while len(to_visit) > 0:
+            best_u = visited[0]
+            best_v = to_visit[0]
+            d = self.DM[best_u, best_v]
+            for u in visited:
+                for v in to_visit:
+                    if self.DM[u, v] < d:
+                        best_u = u
+                        best_v = v
+                        d = self.DM[u, v]
+            visited.append(best_v)
+            to_visit.remove(best_v)
+
+            d_max = max(d_max, d)
+
+
+        return d_max
+
 
 
 
 class EdgeFactory:
-    def __init__(self, N, basic_edges):
+    def __init__(self, N, allowed_edges, M_min=40, M_max=50):
         self.N = N
-        self.basic_edges = basic_edges
-        self.M_min = len(basic_edges) + 1
-        self.M_max = 3*N
-        # self.M_max = N * (N-1) >> 1
+        self.allowed_edges = allowed_edges
 
+        self.M_min = M_min
+        self.M_max = M_max
+        # Don't generate networks that have less edges than the base
+        self.DM = None
+        self.e_max = -1.0
 
     def generate_random(self, m=None):
-        # TODO
-        # Can be inefficient for larger m
-        # Why not sample m edges from all possible? Masking in adjacency matrix.
         if m is None:
             m = rng.integers(self.M_min, self.M_max)
 
-        edges = list(self.basic_edges)
-        while len(edges) < m:
-            u = rng.integers(0, self.N)
-            v = rng.integers(0, self.N)
-            if u != v and not (u,v) in edges:
-                edges.append((u,v))
+        edges = rng.choice(self.allowed_edges, m, replace=False)
 
         return sorted(edges, key=lambda x: (x[0], x[1]))
 
-
-    def generate_random_smart(self, products, m=None):
-        # Modified version that should increase the number of successful networks
+    def generate_random_smart(self, m=None):
         if m is None:
             m = rng.integers(self.M_min, self.M_max)
 
-        edges = list(self.basic_edges)
-        sup, dem = set(), set()
-        for (s, d) in products:
-            sup |= s
-            dem |= d
+        adjL = {}
+        for (u, v) in self.allowed_edges:
+            if u not in adjL:
+                adjL[u] = []
+            adjL[u].append(v)
 
-        # add-on not to add extra basic edges in the next two cycles
-        for (u,v) in edges:
-            if u in sup:
-                sup.remove(u)
-            if v in dem:
-                dem.remove(v)
+        sup = [0]
+        dem = list(range(self.N // 2, self.N))
 
+        edges = []
         for u in sup:
-            v = rng.integers(0, self.N)
-            while u == v:
-                v = rng.integers(0, self.N)
+            v = rng.choice(adjL[u])
             edges.append((u,v))
 
         for v in dem:
-            u = rng.integers(0, self.N)
-            while u == v or (u,v) in edges:
-                u = rng.integers(0, self.N)
-            edges.append((u,v))
-
-        while len(edges) < m:
-            u = rng.integers(0, self.N)
-            v = rng.integers(0, self.N)
-            if u != v and not (u,v) in edges:
-                edges.append((u,v))
+            while True:
+                u = rng.choice(adjL[v])
+                if (u,v) not in edges:
+                    edges.append((u, v))
+                    break
+        m -= len(edges)
+        edges = self.__add(edges, m)
 
         return sorted(edges, key=lambda x: (x[0], x[1]))
 
+    def __add(self, edges, m):
+        edges_extra = [e for e in self.allowed_edges if e not in edges]
+        return edges + [tuple(x) for x in rng.choice(edges_extra, m, replace=False)]
 
     def mutate(self, edges):
-        edges = list(set(edges) - set(self.basic_edges))
-        m = len(edges) + len(self.basic_edges)
+        M = len(edges)
 
         mut_type = rng.choice(['del_edges', 'add_edges', 'replace'], p=[0.33, 0.33, 0.34])
-        if mut_type in ['del_edges', 'replace'] and len(edges) <= 1:
+        if mut_type == 'del_edges' and M <= self.M_min:
             mut_type = 'add_edges'
-        elif mut_type == 'add_edges' and m >= self.M_max:
+        elif mut_type == 'add_edges' and M >= self.M_max:
             mut_type = 'del_edges'
 
         if mut_type == 'del_edges':
-            m_del = rng.integers(1, (m - self.M_min + 1))
-            edges = rng.choice(edges, len(edges)-m_del, replace=False)
+            m_remain = rng.integers(self.M_min, M)
+            edges = rng.choice(edges, m_remain, replace=False)
             edges = [tuple(x) for x in edges]
 
         elif mut_type == 'add_edges':
-            m_add = rng.integers(1, (self.M_max - m + 1))
-            while len(edges) < m + m_add:
-                u = rng.integers(0, self.N)
-                v = rng.integers(0, self.N)
-                if u != v and not (u,v) in edges + self.basic_edges:
-                    edges.append((u,v))
+            edges_extra = [e for e in self.allowed_edges if e not in edges]
+            m_add = rng.integers(1, (self.M_max - M + 1))
+            # edges = edges + [tuple(x) for x in rng.choice(edges_extra, m_add, replace=False)]
+            edges = self.__add(edges, m_add)
 
         elif mut_type == 'replace':
-            m = len(edges)
-            # print(m, flush=True)
-            m_replace = rng.integers(1, m >> 1) if m > 3 else 1
-            edges = [tuple(x) for x in rng.choice(edges, m-m_replace, replace=False)]
-            while len(edges) < m:
-                u = rng.integers(0, self.N)
-                v = rng.integers(0, self.N)
-                if u != v and not (u,v) in edges + self.basic_edges:
-                    edges.append((u,v))
+            m_replace = rng.integers(1, M//2) if M > 3 else 1
+            edges = [tuple(x) for x in rng.choice(edges, M - m_replace, replace=False)]
+            edges = self.__add(edges, m_replace)
 
-        return list(self.basic_edges) + sorted(edges, key=lambda x: (x[0], x[1]))
+        assert(self.M_min <= len(edges) <= self.M_max)
+        return edges
 
 
     def recombine(self, edges_a, edges_b):
-        e1 = list(set(edges_a) - set(self.basic_edges))
-        e2 = list(set(edges_b) - set(self.basic_edges))
-        edges_all = list(set(e1 + e2))
-        if len(edges_all) == 1:
-            return list(self.basic_edges) + edges_all
+        edges_all = list(set(edges_a + edges_b))
 
-        m = rng.integers(1, min(self.M_max-len(self.basic_edges), len(edges_all)))
-        edges = random.sample(edges_all, m)
-        return list(self.basic_edges) + sorted(edges, key=lambda x: (x[0], x[1]))
-
-
-    def extend_edges(self, edges, m):
-        assert(len(edges) + m <= self.N * (self.N - 1) and m > 0)
-
-        while m > 0:
-            u = rng.integers(0, self.N)
-            v = rng.integers(0, self.N)
-            if u != v and not (u,v) in edges:
-                edges.append((u,v))
-                m -= 1
-        return sorted(edges, key=lambda x: (x[0], x[1]))
+        m_take = rng.integers(self.M_min, min(self.M_max+1, len(edges_all)))
+        edges = rng.choice(edges_all, m_take, replace=False)
+        assert(self.M_min <= len(edges) <= self.M_max)
+        return [tuple(x) for x in edges]
 
 
 
@@ -417,60 +396,82 @@ class Network:
     def __init__(self, edges):
         self.edges = edges
         self.ds = self.nc = self.r_e = self.r_n = -1.0
-        self.ms, self.zs_c = 0.0, 0.0
-    
+        self.zs_c = 0.0
 
     def evaluate(self, setup):
         self.ds, self.nc, self.r_e, self.r_n = setup.evaluate(self.edges)
 
+    def evaluate_zsc(self, true_exe=True, nsr=100, nnw=1000, preserve_mutual=True):
+        if true_exe:
+            zs_target = [-0.40, -0.40, -0.15, -0.20, -0.20, 0.00, 0.30, 0.00, 0.20, 0.15, 0.10, 0.00, 0.00]
+            zscores = mfinder_calc_zscores(self.edges, nsr, nnw, preserve_mutual)
 
-    def evaluate_ms(self):
-        zscores = mfinder_calc_zscores(self.edges)
-        self.ms = MS_6_13(zscores)
-        np.nan_to_num(zscores,copy=False)
-        try:
-            corr, p = pearsonr(zscores, zs_target)
-            self.zs_c = corr
-        except:
-            self.zs_c = 0.0
-        return zscores
+            if np.all(zscores == 0):
+                self.zs_c = 0.0
+                return np.zeros(13)
+            else:
+                corr, p = pearsonr(zscores, zs_target)
+                self.zs_c = corr
+
+            return zscores
+        else:
+            return np.zeros(13)
 
     def is_close(self, other):
-        if y_key == 'motifs score':
-            return (abs(self.nc - other.nc) < 1e-6 and abs(self.ms - other.ms) < 0.05)
-        else:
-            return (abs(self.nc - other.nc) < 1e-6 and abs(_y(self) - _y(other)) < 1e-6)
+        # return (2 * abs(self.nc - other.nc) / (self.nc + other.nc) < 1e-3 and abs(_y(self) - _y(other)) < 1e-3)
+        # return abs(_y(self) - _y(other)) < 1e-6
+        return abs(_y(self) - _y(other)) < 1e-6 and abs(self.nc - other.nc) < 1e-6
 
+    def count_subgraphs(self, N):
+        A = np.zeros((N, N), dtype=bool)
+        for (u,v) in self.edges:
+            A[u,v] = True
+
+        def bits2int(bits):
+            res = 0
+            for x in bits:
+                res = (res << 1) | x
+            return res
+
+        motif_ids = {
+            6: 0, 40: 0, 192: 0, 36: 1, 72: 1, 130: 1, 12: 2, 34: 2, 66: 2, 96: 2, 136: 2, 132: 2, 74: 3, 76: 3, 100: 3,
+            138: 3,  162: 3, 164: 3, 14: 4, 42: 4, 70: 4, 168: 4, 196: 4, 224: 4, 170: 5, 78: 5, 228: 5, 38: 6, 44: 6,
+            104: 6, 134: 6, 194: 6, 200: 6, 98: 7, 140: 7, 202: 8, 108: 8, 166: 8, 232: 9, 198: 9, 46: 9, 102: 10,
+            106: 10, 142: 10, 172: 10, 204: 10, 226: 10, 110: 11, 174: 11, 206: 11, 230: 11, 234: 11, 236: 11, 238: 12}
+
+        count = np.zeros(13, dtype=int)
+        for abc in combinations(range(N), 3):
+            ixgrid = np.ix_(abc, abc)
+            idx = bits2int(A[ixgrid].flatten())
+            # idx = bits2int([self.A[u][v] for u in abc for v in abc])
+            if idx in motif_ids:
+                count[motif_ids[idx]] += 1
+
+        return count
 
     def __eq__(self, other):
-        return sorted(self.edges, key=lambda x: (x[0], x[1]))  == sorted(other.edges, key=lambda x: (x[0], x[1]))
-    
+        return sorted(self.edges, key=lambda x: (x[0], x[1])) == sorted(other.edges, key=lambda x: (x[0], x[1]))
 
     def __str__(self):
-        return f'({self.ds:.2f}, {self.nc:.2f}, {self.r_e:.2f}, {self.r_n:.2f}, {self.ms:.2f}, {self.zs_c:.2f})'
-
+        return f'(ds={self.ds:.2f}, nc={self.nc:.2f}, r_e={self.r_e:.2f}, r_n={self.r_n:.2f}, zs_c={self.zs_c:.2f})'
 
     def __repr__(self):
         return self.__str__()
 
         
-
 class GeneticAlgorithm:
     gen_prop = {
         'Recombined': 0.25,
         'Mutated': 0.70,
         'Random': 0.05}
     
-
-    # def __init__(self, N, x, y, products, path, G_max=151, G_size=250, G_save=25):
-    def __init__(self, basic_edges, setup, path, G_max=151, G_size=250, G_save=25):
+    def __init__(self, allowed_edges, setup, path, M_min, M_max, G_max=151, G_size=250, G_save=25):
         self.G_max = G_max 
         self.G_size = G_size
         self.G_save = G_save
 
-        # self.setup = NetworkSetup(N, x, y, products)
         self.setup = setup
-        self.EFACT = EdgeFactory(setup.N, basic_edges)
+        self.EFACT = EdgeFactory(setup.N, allowed_edges, M_min, M_max)
 
         self.path = path
         if not os.path.exists(self.path):
@@ -478,35 +479,30 @@ class GeneticAlgorithm:
         self.setup.save_setup(self.path + 'setup.txt')
         print('Genetic algorithm optimization\n', self.path)
 
-
     def optimize(self):
-        # Creating G_0
         self.make_G0()
-        print(f'Start optimization:\n(0; {len(self.pareto)}; {self.nc_min:.4e})', end=', ', flush=True)
+        print(f'Start optimization:\n(0; {len(self.pareto)}; {self.nc_min:.2f})', end=', ', flush=True)
         self.__plot_front(0, [], [], [])
         for i_G in range(1, self.G_max):
             self.make_new_generation(i_G)
-            print(f'({i_G}; {len(self.pareto)}; {self.nc_min:.4e})', end=', ', flush=True)
-
+            print(f'({i_G}; {len(self.pareto)}; {self.nc_min:.2f})', end=', ', flush=True)
 
     def make_G0(self):
         # population is a list of Network() objects
         self.population = []
         while len(self.population) < self.G_size:
-            edges = self.EFACT.generate_random()
-            # edges = self.EFACT.generate_random_smart(self.setup.products)
+            # edges = self.EFACT.generate_random()
+            edges = self.EFACT.generate_random_smart()
             nw = Network(edges)
             nw.evaluate(self.setup)
 
-            if nw.ds >= 1.0 and (not nw in self.population):
-                nw.evaluate_ms()
+            if nw.ds >= 1.0 and (nw not in self.population):
+                nw.evaluate_zsc(true_exe=(y_key == 'zs corr'))
                 self.population.append(nw)
-
 
         self.__get_ranks()
         self.__get_pareto()
         self.__get_parents()
-
     
     def make_new_generation(self, i_G):
         # pool is a list of Network() objects
@@ -519,8 +515,8 @@ class GeneticAlgorithm:
             nw_new = Network(e_new)
             nw_new.evaluate(self.setup)
             # if nw_new.ds >= th and (not nw_new in pool + G_rec):
-            if nw_new.ds >= 1.0 and (not nw_new in pool + G_rec):
-                nw_new.evaluate_ms()
+            if nw_new.ds >= 1.0 and (nw_new not in pool + G_rec):
+                nw_new.evaluate_zsc(true_exe=(y_key == 'zs corr'))
                 G_rec.append(nw_new)
 
         G_mut = []
@@ -530,19 +526,18 @@ class GeneticAlgorithm:
             nw_new = Network(e_new)
             nw_new.evaluate(self.setup)
             # if nw_new.ds >= th and (not nw_new in pool + G_rec + G_mut):
-            if nw_new.ds >= 1.0 and (not nw_new in pool + G_rec + G_mut):
-                nw_new.evaluate_ms()
+            if nw_new.ds >= 1.0 and (nw_new not in pool + G_rec + G_mut):
+                nw_new.evaluate_zsc(true_exe=(y_key == 'zs corr'))
                 G_mut.append(nw_new)
 
         G_rnd = []
         while len(G_rnd) < int(self.G_size * self.gen_prop['Random']):
             # e_new = self.EFACT.generate_random()
-            e_new = self.EFACT.generate_random_smart(self.setup.products)
+            e_new = self.EFACT.generate_random_smart()
             nw_new = Network(e_new)
             nw_new.evaluate(self.setup)
-            # if nw_new.ds >= th and (not nw_new in pool + G_rec + G_mut):
-            if nw_new.ds >= 1.0 and (not nw_new in pool + G_rec + G_mut):
-                nw_new.evaluate_ms()
+            if nw_new.ds >= 1.0 and (nw_new not in pool + G_rec + G_mut):
+                nw_new.evaluate_zsc(true_exe=(y_key == 'zs corr'))
                 G_rnd.append(nw_new)
 
         self.population = []
@@ -558,14 +553,11 @@ class GeneticAlgorithm:
         self.__get_pareto()
         self.__get_parents()
         
-
         if i_G % self.G_save == 0:
             # for i in self.pareto:
-            #     # nw = self.population[i].reduce_network(self.setup)
             #     print(i, len(self.population[i].edges))
             self.__save_optimal(i_G, plot=(i_G == (self.G_max-1)))
             self.__plot_front(i_G, G_rec, G_mut, G_rnd)
-
 
     def __get_ranks(self):
         N_pop = len(self.population)
@@ -603,11 +595,9 @@ class GeneticAlgorithm:
 
         self.nc_min = nc_min
 
-
     def __get_pareto(self):
         self.pareto = [i for i, rk in self.G_ranks.items() if rk == 0]
         self.pareto.sort(key = lambda i: _y(self.population[i]))
-
 
     def __get_parents(self):
         self.parents = []
@@ -626,25 +616,22 @@ class GeneticAlgorithm:
         
         self.parents.sort(key = lambda i: _y(self.population[i]))
 
-
     def __save_optimal(self, i_G, plot=False):
         save_path = self.path + f'G_{i_G:05d}/'
         if not os.path.exists(save_path):
             os.makedirs(save_path)
 
-        overview = '# i, nc, r_e, r_n, ms, zs_c\n'
+        overview = 'i,nc,r_e,r_n,zsc\n'
         for j, idx in enumerate(self.pareto):
             nw = self.population[idx]
             save_edges(nw.edges, save_path + f'i={j:04d}.edges')
 
-            overview += f'{j},{nw.nc:.6f},{nw.r_e:.6f},{nw.r_n:.6f},{nw.ms:.6f},{nw.zs_c:.6f}\n'
+            overview += f'{j},{nw.nc:.6f},{nw.r_e:.6f},{nw.r_n:.6f},{nw.zs_c:.6f}\n'
 
             if plot:
                 self.setup.plot_network(nw.edges, save_path + f'i={j:04d}.png')
 
-
         codecs.open(save_path + 'overview.txt', 'w').write(overview)
-
 
     def __plot_front(self, i_G, G_rec, G_mut, G_rnd):
         _par_nc = [self.population[i].nc for i in self.pareto]
@@ -654,6 +641,13 @@ class GeneticAlgorithm:
 
         _, ax = plt.subplots(figsize=(8,6))
         plt.plot([self.population[i].nc for i in self.pareto], [_y(self.population[i]) for i in self.pareto], 'o-', ms=4, color='black', alpha=0.7, label='pareto')
+        # print()
+        # print(len(self.population))
+        # print(len(G_rec), len(G_mut), len(G_rnd))
+        # print(len(self.pareto), len(self.parents))
+        # for i in range(len(self.population)):
+        #     plt.text(self.population[i].nc, _y(self.population[i]), f'{self.G_ranks[i]}', fontsize=8)
+
         if i_G == 0:
             plt.scatter([nw.nc for nw in self.population], [_y(nw) for nw in self.population], 15, 'C0', 'o', edgecolors='None', alpha=0.5, label='previous population')
 
@@ -661,10 +655,10 @@ class GeneticAlgorithm:
         plt.plot([nw.nc for nw in G_rec], [_y(nw) for nw in G_rec], 'o', ms=4, color='C1', alpha=0.5, label='recombined')
         plt.plot([nw.nc for nw in G_mut], [_y(nw) for nw in G_mut], 'x', ms=4, color='C3', alpha=0.5, label='mutated')
         plt.plot([nw.nc for nw in G_rnd], [_y(nw) for nw in G_rnd], 'd', ms=4, color='C4', alpha=0.5, label='random')
-        plt.title(f'GA optimization; N={self.setup.N}; rt={th:.2f},\nG={i_G:03d}, G_size={self.G_size}')
+        plt.title(f'GA optimization; N={self.setup.N}; rt={ds_th:.2f},\nG={i_G:03d}, G_size={self.G_size}')
         ax.set_xlabel('score')
         ax.set_ylabel(y_key)
-        ax.legend(loc='best')
+        ax.legend(loc='center right')
         ax.set_xlim(nc_min - 0.1 * ds, nc_max + 0.2 * ds)
         ax.grid(alpha = 0.4, linestyle = '--', linewidth = 0.2, color = 'black')
         plt.savefig(self.path + f'opt_conv-G={i_G:04d}.png', bbox_inches = 'tight', pad_inches=0.1, dpi=400)
@@ -672,11 +666,9 @@ class GeneticAlgorithm:
         # plt.show()
 
 
-
 class MST_solver:
     def __init__(self, setup):
         self.setup = setup
-
 
     def solve(self):
         terminals = list(self.setup.products[0][1])
@@ -704,8 +696,6 @@ class MST_solver:
                 break    
         return sorted(edges, key=lambda x: (x[0], x[1]))
 
-
-
     def __solve_once(self, terminals):
         chosen = [0]
         remain = list(terminals)
@@ -729,14 +719,10 @@ class MST_solver:
         return edges, total_d
 
 
-
-
-
 def save_edges(edges, fpath='nw_edges.txt'):
     with codecs.open(fpath, 'w') as fout:
         for u, v in edges:
             fout.write(f'{u} {v} 1\n')
-
 
 
 def read_edges(fpath):
@@ -746,7 +732,6 @@ def read_edges(fpath):
             vals = line.split()
             edges.append((int(vals[0]), int(vals[1])))
     return edges
-
 
 
 def stretch_coordinates(x, y):
@@ -774,96 +759,123 @@ def stretch_coordinates(x, y):
                     y[j] = y[j] + 0.5 * dmin * dy / d
 
 
-
-def mfinder_calc_zscores(edges):
-    """
-    result is a np.array(13), infinities (888888) are replaced with np.NaN
-    Other procedures (plotting, calculating mean, etc.) should be adjusted accordingly
-    """
-    with codecs.open('tmp_motifs/tmp.edges', 'w') as fout:
+def mfinder_calc_zscores(edges, nswitch=100, nnetw=1000, preserve_mutual=True):
+    with codecs.open(mfpath + 'tmp.edges', 'w') as fout:
         for u,v in edges:
             fout.write(f'{u+1} {v+1} 1\n')
 
-    run(f'tmp_motifs/mfinder1.2.exe tmp_motifs/tmp.edges -r 1000 -f tmp_motifs/tmp', stdout=DEVNULL)
+    m_args = f'-nsr {nswitch} -r {nnetw}' + ('' if preserve_mutual else ' -rdm')
+    # run(f'{mfpath}mfinder.exe {mfpath}tmp.edges {m_args} -orall -omat -f {mfpath}tmp', stdout=DEVNULL)
+    run(f'{mfpath}mfinder {mfpath}tmp.edges {m_args} -orall -omat -f {mfpath}tmp', stdout=DEVNULL, shell=True)
 
-    id2x = {6: 0,  36: 1, 12: 2, 74: 3, 14: 4, 78: 5, 38: 6, 98: 7, 108: 8, 46: 9, 102: 10, 110: 11, 238: 12}
+    order = [0, 3, 1, 6, 2, 7, 4, 8, 10, 5, 9, 11, 12]
+    stats = np.loadtxt(mfpath + 'tmp_MAT.txt')[order]
+    mf_c = stats[:, 1].astype(int)
+    mf_m = stats[:, 2]
+    mf_s = stats[:, 3]
+    mf_z = (mf_c - mf_m) / (mf_s + 1e-8)
+    # return mf_z, mf_c, mf_m, mf_s
 
-    with codecs.open('tmp_motifs/tmp_OUT.txt', 'r') as fin:
-        start = 'ID		STATS		ZSCORE	PVAL	[MILI]'
-        kk = len(start)
-        
-        for line in fin:
-            if line[:kk] == start:
-                break
-        else:
-            print(f'Warning! no motifs information found!', flush=True)
-            return np.zeros(13)
-        
-        norm = 0.
-        zscores = np.zeros(13)
-        for _ in range(13):
-            line = fin.readline()
-            vals = line.split()
-            motif_id = int(vals[0])
-            if vals[3] != '888888':
-                zscores[id2x[motif_id]] = float(vals[3])
-                norm += float(vals[3])**2
-            else:
-                zscores[id2x[motif_id]] = np.NaN
-            line = fin.readline()
-
-    # norm = np.sqrt(norm) if norm > 1e-6 else 1.0
-    # zscores /= norm
-    return zscores
+    norm = np.linalg.norm(mf_z)
+    norm = 1.0 if norm < 1e-7 else norm
+    return mf_z / norm
 
 
-def MS_6_13(zscores):
-    res = 0
-    xnan = np.isnan(zscores)
-    for i in range(13):
-        if not xnan[i]:
-            res += zscores[i] if i < 6 else -zscores[i]
-    return res
+def check_connected(N, edges):
+    adjL = {}
+    for (u, v) in edges:
+        if u not in adjL:
+            adjL[u] = []
+        adjL[u].append(v)
+
+    if 0 not in adjL:
+        return False
+    else:
+        visited = set([0])
+        to_visit = set(adjL[0])
+        while len(to_visit) > 0:
+            v = to_visit.pop()
+            if v not in visited:
+                visited.add(v)
+                to_visit = to_visit | (set(adjL[v]) - visited)
+
+        return set([i for i in range(N)]) == visited
 
 
-def MS_abs(zscores):
-    positive = np.nansum(zscores[:6]) >= 0
-
-    x = np.nansum(np.abs(zscores))
-    return x if positive else -x
 
 
 
 
 if __name__ == '__main__':
+    # edges = read_edges('i=0002.edges')
+    # nw = Network(edges)
+    # zs = nw.evaluate_zsc()
+    # c = nw.count_subgraphs(20)
+    # print(c)
+
     N, K = 20, 1
-    products = [(set([0]), set(range(N//2,N)))]
+    products = [({0}, set(range(N // 2, N)))]
 
     for i_seed in range(1):
         rng = np.random.default_rng(i_seed)
-        # Variation of node positions
+
         x = rng.uniform(0.0, 10.0, N)
         y = rng.uniform(0.0, 10.0, N)
         stretch_coordinates(x, y)
-
         setup = NetworkSetup(N, x, y, products)
 
-        # EFACT = EdgeFactory(N)
-        # edges = EFACT.generate_random_smart(products)
 
-        MST = MST_solver(setup)
-        edges = MST.solve()
+        len_max = setup.get_connectivity_length()
+        print(len_max)
+        allowed_edges = setup.generate_allowed_edges(len_max*1.2)
+        print(check_connected(N, allowed_edges))
 
-        # edges = [(0,x) for x in range(N//2,N)]
+        # # EFACT = EdgeFactory(N, basic_edges=[], allowed_edges=edges_all, M_min=19, M_max=25)
+        # EFACT = EdgeFactory(N, allowed_edges=edges_all, M_min=16, M_max=22)
+        # i = 0
+        # while True:
+        #     # edges = EFACT.generate_random()
+        #     edges = EFACT.generate_random_smart()
+        #     NW = Network(edges)
+        #     NW.evaluate(setup)
+        #     if NW.ds == 1.0:
+        #         # NW.evaluate_zsc()
+        #         print(i, NW, len(edges))
+        #         c = NW.count_subgraphs(N)
+        #         print(c)
+        #         break
+        #
+        #     i += 1
+        #     if i % 1000 == 0:
+        #         print(i, NW.ds)
+        #
+        # setup.plot_network(edges)
 
-        NW = Network(edges)
-        NW.evaluate(setup)
-        NW.evaluate_ms()
-        print(NW)
 
-        path = f'results-ZS_c-base-N={N}/seed={i_seed:03d}/'
 
-        optimizer = GeneticAlgorithm(edges, setup, path, G_max=201, G_size=250, G_save=25)
+
+        # for i in range(20):
+        #     edges = EFACT.generate_random_smart()
+        #     NW = Network(edges)
+        #     NW.evaluate(setup)
+        #     if NW.ds == 1.0:
+        #         NW.evaluate_zsc()
+        #         print(i, NW, len(edges))
+        #         c = NW.count_subgraphs(N)
+        #         print(c)
+
+        # edges = [(0,6), (4,6), (6,7), (6,8), (7,0), (7,5), (7,9), (8,5), (8,7), (8,9)]
+
+        # for i in range(130):
+        #     edges = read_edges(f'results/N=10-M=10-20/seed=000/G_00025/i={i:04d}.edges')
+        #     NW = Network(edges)
+        #     NW.evaluate(setup)
+        #     NW.evaluate_zsc()
+        #     print(i, NW)
+
+
+        path = f'test-M/seed={i_seed:03d}/'
+        optimizer = GeneticAlgorithm(allowed_edges, setup, path, M_min=16, M_max=22, G_max=201, G_size=200, G_save=5)
         optimizer.optimize()
 
 
